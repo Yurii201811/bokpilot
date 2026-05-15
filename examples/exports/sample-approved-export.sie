@@ -1,0 +1,15 @@
+#FLAGGA 0
+#PROGRAM "Bokpilot" 0.1.0
+#FORMAT PC8
+#GEN 20260516
+#FNAMN "Bokpilot Demo Company"
+#RAR 0 20260101 20261231
+#KONTO 1930 "Företagskonto"
+#KONTO 2641 "Ingående moms"
+#KONTO 5420 "Programvaror"
+#VER "BP" "1" 20260502 "Fortnox subscription May"
+{
+#TRANS 5420 {} 199.20
+#TRANS 2641 {} 49.80
+#TRANS 1930 {} -249.00
+}

@@ -1,0 +1,8 @@
+Supplier: Tele2
+Date: 2026-05-15
+Total: 499.00
+VAT: 99.80
+Description: Business broadband and mobile data
+
+Demo telecom receipt for a freelancer who uses home office connectivity partly
+for business. Human review should confirm allocation if private use exists.

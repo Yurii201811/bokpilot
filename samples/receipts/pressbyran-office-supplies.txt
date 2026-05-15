@@ -1,0 +1,8 @@
+Supplier: Pressbyran
+Date: 2026-05-03
+Total: 129.00
+VAT: 25.80
+Description: Kontorsmaterial - pennor och block for client notes
+
+Demo receipt text. The real product should keep the original receipt attached
+to the bookkeeping packet and let a human verify VAT and business purpose.

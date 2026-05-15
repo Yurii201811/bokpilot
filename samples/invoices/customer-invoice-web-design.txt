@@ -1,0 +1,9 @@
+Customer invoice: 2026-104
+Date: 2026-05-05
+Customer: Nordic Design Studio AB
+Total: 12500.00
+VAT: 2500.00
+Description: Customer invoice paid for Swedish web design services
+
+Customer invoice demo. Bokpilot suggests revenue and output VAT, but a human
+must verify whether the income is sales, refund, owner contribution, or other.

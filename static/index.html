@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bokpilot</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Primary">
+        <a class="brand" href="#dashboard" aria-label="Bokpilot dashboard">
+          <span class="brand-mark" aria-hidden="true">B</span>
+          <span>
+            <strong>Bokpilot</strong>
+            <small>Open pre-accounting</small>
+          </span>
+        </a>
+        <nav class="nav-list">
+          <a href="#dashboard" class="active">Dashboard</a>
+          <a href="#inbox">Inbox</a>
+          <a href="#review">Review</a>
+          <a href="#export">Export</a>
+          <a href="#learn">Learn</a>
+        </nav>
+        <div class="privacy-note">
+          <strong>Local first</strong>
+          <span>No paid API is required. Demo data is stored in a local JSON workspace.</span>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <h1>Bokpilot</h1>
+            <p>Human-reviewed bookkeeping preparation for Swedish receipts, invoices, bank CSV files, BAS accounts, VAT, and export packets.</p>
+          </div>
+          <div class="topbar-actions">
+            <button id="load-sample" class="button primary" type="button">Load samples</button>
+            <button id="reset" class="button ghost" type="button">Reset</button>
+          </div>
+        </header>
+
+        <section class="review-warning" role="note" aria-label="Accounting disclaimer">
+          <strong>Suggestions only.</strong>
+          <span>Bokpilot does not replace an accountant and does not provide tax, legal, or professional accounting advice. Export includes approved human-reviewed items only.</span>
+        </section>
+
+        <section id="dashboard" class="metric-grid" aria-label="Workspace summary">
+          <article class="metric">
+            <span>Imported</span>
+            <strong id="metric-pending">0</strong>
+          </article>
+          <article class="metric">
+            <span>Needs review</span>
+            <strong id="metric-review">0</strong>
+          </article>
+          <article class="metric">
+            <span>Approved</span>
+            <strong id="metric-approved">0</strong>
+          </article>
+          <article class="metric export-ready">
+            <span>Export ready</span>
+            <strong id="metric-export">0</strong>
+          </article>
+        </section>
+
+        <section id="inbox" class="intake-band" aria-label="Import documents and transactions">
+          <div class="section-heading">
+            <h2>Import</h2>
+            <p>Receipts, supplier invoices, customer invoices, and bank CSV rows become review items.</p>
+          </div>
+          <div class="intake-grid">
+            <form id="file-form" class="intake-panel">
+              <label for="file-input">Receipt, invoice, or bank CSV</label>
+              <input id="file-input" name="file" type="file" accept=".csv,.txt,.md,.text" />
+              <button class="button" type="submit">Import file</button>
+              <p class="field-help">CSV needs date, description, and amount columns. Text files can use labels like Supplier, Date, Total, VAT, Description.</p>
+            </form>
+            <form id="manual-form" class="intake-panel">
+              <div class="form-row">
+                <label for="manual-date">Date</label>
+                <input id="manual-date" name="date" type="date" required />
+              </div>
+              <div class="form-row">
+                <label for="manual-description">Description</label>
+                <input id="manual-description" name="description" type="text" placeholder="Fortnox subscription" required />
+              </div>
+              <div class="form-row split">
+                <div>
+                  <label for="manual-counterparty">Counterparty</label>
+                  <input id="manual-counterparty" name="counterparty" type="text" placeholder="Fortnox AB" />
+                </div>
+                <div>
+                  <label for="manual-amount">Amount SEK</label>
+                  <input id="manual-amount" name="amount" type="number" step="0.01" placeholder="-249.00" required />
+                </div>
+              </div>
+              <button class="button" type="submit">Add transaction</button>
+            </form>
+          </div>
+        </section>
+
+        <section id="review" class="review-layout">
+          <div class="queue-panel">
+            <div class="section-heading row-heading">
+              <div>
+                <h2>Review queue</h2>
+                <p>Every BAS and VAT treatment is a draft until a human approves it.</p>
+              </div>
+              <label class="filter-control" for="status-filter">
+                <span>Status</span>
+                <select id="status-filter">
+                  <option value="all">All</option>
+                  <option value="needs_review">Needs review</option>
+                  <option value="approved">Approved</option>
+                  <option value="rejected">Rejected</option>
+                </select>
+              </label>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">Item</th>
+                    <th scope="col">Date</th>
+                    <th scope="col">Description</th>
+                    <th scope="col">Amount</th>
+                    <th scope="col">BAS</th>
+                    <th scope="col">VAT</th>
+                    <th scope="col">Confidence</th>
+                    <th scope="col">Status</th>
+                  </tr>
+                </thead>
+                <tbody id="items-table"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <aside class="detail-panel" aria-live="polite">
+            <div id="detail-empty" class="empty-state">
+              <h2>Select an item</h2>
+              <p>The detail panel shows suggested journal lines, VAT reasoning, risk flags, and reviewer actions.</p>
+            </div>
+            <div id="detail-content" hidden>
+              <div class="detail-header">
+                <div>
+                  <span id="detail-id" class="eyebrow"></span>
+                  <h2 id="detail-title"></h2>
+                </div>
+                <span id="detail-status" class="status-pill"></span>
+              </div>
+              <dl class="detail-facts">
+                <div>
+                  <dt>Amount</dt>
+                  <dd id="detail-amount"></dd>
+                </div>
+                <div>
+                  <dt>Suggested BAS</dt>
+                  <dd id="detail-bas"></dd>
+                </div>
+                <div>
+                  <dt>VAT</dt>
+                  <dd id="detail-vat"></dd>
+                </div>
+                <div>
+                  <dt>Confidence</dt>
+                  <dd id="detail-confidence"></dd>
+                </div>
+              </dl>
+              <section class="reasoning">
+                <h3>Reasoning</h3>
+                <p id="detail-explanation"></p>
+                <ul id="risk-list"></ul>
+              </section>
+              <section>
+                <h3>Draft journal lines</h3>
+                <div id="journal-lines" class="journal-lines"></div>
+              </section>
+              <form id="review-form" class="review-form">
+                <div class="form-row split">
+                  <div>
+                    <label for="review-account">BAS account</label>
+                    <input id="review-account" name="bas_account" type="text" inputmode="numeric" />
+                  </div>
+                  <div>
+                    <label for="review-vat">VAT rate</label>
+                    <select id="review-vat" name="vat_rate">
+                      <option value="25">25%</option>
+                      <option value="12">12%</option>
+                      <option value="6">6%</option>
+                      <option value="0">0%</option>
+                    </select>
+                  </div>
+                </div>
+                <label for="review-note">Reviewer note</label>
+                <textarea id="review-note" name="reviewer_note" rows="3" placeholder="Why this was approved, rejected, or changed"></textarea>
+                <div class="review-actions">
+                  <button class="button success" type="submit" data-status="approved">Approve</button>
+                  <button class="button warning" type="submit" data-status="needs_review">Keep open</button>
+                  <button class="button danger" type="submit" data-status="rejected">Reject</button>
+                </div>
+              </form>
+            </div>
+          </aside>
+        </section>
+
+        <section id="export" class="export-band">
+          <div class="section-heading">
+            <h2>Export</h2>
+            <p>Exports are built from approved items only and remain draft material for real accounting systems.</p>
+          </div>
+          <div class="export-actions">
+            <button class="button" type="button" data-export="json">JSON review packet</button>
+            <button class="button" type="button" data-export="csv">CSV summary</button>
+            <button class="button" type="button" data-export="sie">SIE-style draft</button>
+          </div>
+          <pre id="export-preview" tabindex="0">Approve at least one item to preview an export.</pre>
+        </section>
+
+        <section id="learn" class="learn-grid" aria-label="Bookkeeping concepts">
+          <article>
+            <h2>VAT</h2>
+            <p>VAT is value added tax. Bokpilot calculates draft input or output VAT from gross amounts when the source material suggests a rate.</p>
+          </article>
+          <article>
+            <h2>BAS accounts</h2>
+            <p>BAS is Sweden's common chart-of-accounts structure. The app suggests accounts such as 1930 bank, 2641 input VAT, and 3011 sales.</p>
+          </article>
+          <article>
+            <h2>SIE files</h2>
+            <p>SIE is a Swedish bookkeeping exchange format. Bokpilot emits a basic SIE-style draft so contributors can inspect the voucher logic.</p>
+          </article>
+          <article>
+            <h2>Human review</h2>
+            <p>Classification, VAT, deductibility, representation, and asset treatment can depend on facts outside the file. Approval is mandatory before export.</p>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

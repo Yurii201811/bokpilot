@@ -1,0 +1,31 @@
+{
+  "metadata": {
+    "program": "Bokpilot",
+    "generated_on": "2026-05-16",
+    "export_policy": "Only human-approved items are included.",
+    "disclaimer": "Draft bookkeeping suggestions only; verify before posting or filing."
+  },
+  "items": [
+    {
+      "id": "BP-0001",
+      "raw": {
+        "date": "2026-05-02",
+        "description": "Fortnox subscription May",
+        "counterparty": "Fortnox AB",
+        "amount": -249.0,
+        "currency": "SEK"
+      },
+      "suggestion": {
+        "category": "Software and cloud services",
+        "bas_account": "5420",
+        "bas_account_name": "Programvaror",
+        "vat_rate": 25.0,
+        "vat_amount": 49.8,
+        "confidence": 0.88,
+        "review_required": true
+      },
+      "status": "approved",
+      "human_reviewed": true
+    }
+  ]
+}

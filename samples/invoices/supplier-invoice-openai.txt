@@ -1,0 +1,8 @@
+Supplier: OpenAI
+Date: 2026-05-18
+Total: 240.00
+VAT: 48.00
+Description: Software subscription for AI-assisted bookkeeping preparation
+
+Supplier invoice demo for software tooling. Cross-border reverse-charge VAT is
+not modeled in the MVP and should be handled manually when relevant.
