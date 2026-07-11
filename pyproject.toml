@@ -28,3 +28,12 @@ bokpilot = "bokpilot.server:main"
 
 [tool.setuptools]
 packages = ["bokpilot"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+bokpilot = [
+  "resources/static/*",
+  "resources/samples/bank/*.csv",
+  "resources/samples/invoices/*.txt",
+  "resources/samples/receipts/*.txt",
+]

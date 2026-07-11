@@ -55,11 +55,17 @@ Run tests:
 python3 -m unittest
 ```
 
-Optional editable install:
+Install the package and run the console command:
 
 ```bash
-python3 -m pip install -e .
+python3 -m pip install .
 bokpilot --port 8765
+```
+
+To build a wheel in a temporary directory and smoke-test its installed web assets and sample data from outside the checkout:
+
+```bash
+python3 scripts/smoke_installed.py --build-wheel
 ```
 
 ## Demo flow
@@ -75,7 +81,7 @@ The sample dataset includes:
 - `IKEA desk lamp workspace` -> small equipment, review flag.
 - `Circle K fuel client visit` -> vehicle fuel, review flag.
 
-Example input files live in [samples](samples). Illustrative export snapshots live in [examples/exports](examples/exports).
+Example input files ship inside [the Bokpilot package](bokpilot/resources/samples). Illustrative export snapshots live in [examples/exports](examples/exports).
 
 ## Screenshots
 
@@ -91,8 +97,8 @@ Mobile responsive view:
 
 ```text
 bokpilot/             Python backend, parsers, rules, data store, exporters
-static/               Code-native web UI
-samples/              Swedish demo receipt, invoice, and bank CSV inputs
+  resources/static/   Packaged web UI
+  resources/samples/  Packaged Swedish demo receipt, invoice, and bank CSV inputs
 examples/exports/     Example export snapshots
 tests/                Standard-library unit tests
 docs/                 Product brief, architecture, data model, workflows

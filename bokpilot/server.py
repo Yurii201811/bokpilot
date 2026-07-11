@@ -12,12 +12,18 @@ from urllib.parse import urlparse
 
 from .exports import export_csv, export_json, export_sie_style, export_summary
 from .parsers import manual_transaction, parse_bank_csv, parse_document_text
+from .resources import resource_file
 from .sample_data import load_sample_transactions
 from .store import WorkspaceStore
 
 
-ROOT = Path(__file__).resolve().parents[1]
-STATIC_ROOT = ROOT / "static"
+STATIC_ASSETS = {
+    "": "index.html",
+    "/": "index.html",
+    "/index.html": "index.html",
+    "/app.js": "app.js",
+    "/styles.css": "styles.css",
+}
 
 
 class BokpilotHandler(BaseHTTPRequestHandler):
@@ -112,12 +118,11 @@ class BokpilotHandler(BaseHTTPRequestHandler):
         self._json({"error": message}, status)
 
     def _static(self, path: str) -> None:
-        target = STATIC_ROOT / ("index.html" if path in {"/", ""} else path.lstrip("/"))
-        if not target.exists() or not target.resolve().is_relative_to(STATIC_ROOT.resolve()):
-            target = STATIC_ROOT / "index.html"
+        filename = STATIC_ASSETS.get(path, "index.html")
+        target = resource_file("static", filename)
         body = target.read_bytes()
         self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", mimetypes.guess_type(str(target))[0] or "text/plain")
+        self.send_header("Content-Type", mimetypes.guess_type(filename)[0] or "text/plain")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
