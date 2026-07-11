@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
     <div class="app-shell">
       <aside class="sidebar" aria-label="Primary">
         <a class="brand" href="#dashboard" aria-label="Bokpilot dashboard">
@@ -29,7 +30,7 @@
         </div>
       </aside>
 
-      <main class="workspace">
+      <main id="main-content" class="workspace">
         <header class="topbar">
           <div>
             <h1>Bokpilot</h1>
@@ -44,6 +45,47 @@
         <section class="review-warning" role="note" aria-label="Accounting disclaimer">
           <strong>Suggestions only.</strong>
           <span>Bokpilot does not replace an accountant and does not provide tax, legal, or professional accounting advice. Export includes approved human-reviewed items only.</span>
+        </section>
+        <section id="demo-banner" class="review-warning" role="note" hidden>
+          <strong>Synthetic accounting rules—do not use for real bookkeeping.</strong>
+        </section>
+
+        <div id="error-summary" class="error-summary" role="alert" hidden></div>
+
+        <section class="intake-band onboarding" aria-labelledby="onboarding-title">
+          <div class="section-heading">
+            <div>
+              <h2 id="onboarding-title">First-run corridor</h2>
+              <p>1. Company profile · 2. Import and validate · 3. Review and export</p>
+            </div>
+          </div>
+          <form id="profile-form" class="profile-grid">
+            <label for="profile-name">Company name
+              <input id="profile-name" name="name" required />
+            </label>
+            <label for="profile-method">Accounting method
+              <select id="profile-method" name="accounting_method">
+                <option value="cash">Cash</option>
+                <option value="accrual">Accrual</option>
+              </select>
+            </label>
+            <label for="profile-start">Fiscal year start
+              <input id="profile-start" name="fiscal_year_start" type="date" required />
+            </label>
+            <label for="profile-end">Fiscal year end
+              <input id="profile-end" name="fiscal_year_end" type="date" required />
+            </label>
+            <label for="profile-currency">Currency
+              <input id="profile-currency" name="currency" value="SEK" readonly />
+            </label>
+            <label for="profile-series">Voucher series
+              <input id="profile-series" name="voucher_series" value="BP" maxlength="8" required />
+            </label>
+            <label for="profile-org">Organization number (optional)
+              <input id="profile-org" name="organization_number" />
+            </label>
+            <button class="button primary" type="submit">Save company profile</button>
+          </form>
         </section>
 
         <section id="dashboard" class="metric-grid" aria-label="Workspace summary">
@@ -131,15 +173,49 @@
                   <option value="rejected">Rejected</option>
                 </select>
               </label>
+              <label class="filter-control" for="search-filter">Search
+                <input id="search-filter" type="search" placeholder="Description or ID" />
+              </label>
+              <label class="filter-control" for="risk-filter">Risk
+                <select id="risk-filter">
+                  <option value="all">All</option>
+                  <option value="flagged">Flagged</option>
+                  <option value="clear">No flags</option>
+                </select>
+              </label>
+              <label class="filter-control" for="kind-filter">Source
+                <select id="kind-filter">
+                  <option value="all">All kinds</option>
+                  <option value="bank_transaction">Bank</option>
+                  <option value="receipt">Receipt</option>
+                  <option value="supplier_invoice">Supplier invoice</option>
+                  <option value="customer_invoice">Customer invoice</option>
+                  <option value="manual">Manual</option>
+                </select>
+              </label>
+              <label class="filter-control" for="confidence-filter">Confidence
+                <select id="confidence-filter">
+                  <option value="all">All</option>
+                  <option value="low">Below 70%</option>
+                  <option value="high">70% and above</option>
+                </select>
+              </label>
+              <label class="filter-control" for="unresolved-filter">Duplicates
+                <select id="unresolved-filter">
+                  <option value="all">All</option>
+                  <option value="unresolved">Unresolved only</option>
+                  <option value="clear">Resolved/none</option>
+                </select>
+              </label>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
                     <th scope="col">Item</th>
-                    <th scope="col">Date</th>
+                    <th scope="col"><button id="sort-date" class="sort-button" type="button">Date</button></th>
                     <th scope="col">Description</th>
-                    <th scope="col">Amount</th>
+                    <th scope="col"><button id="sort-amount" class="sort-button" type="button">Amount</button></th>
                     <th scope="col">BAS</th>
                     <th scope="col">VAT</th>
                     <th scope="col">Confidence</th>
@@ -164,6 +240,10 @@
                 </div>
                 <span id="detail-status" class="status-pill"></span>
               </div>
+              <div class="review-actions">
+                <button id="previous-item" class="button ghost" type="button">Previous item</button>
+                <button id="next-item" class="button ghost" type="button">Next item</button>
+              </div>
               <dl class="detail-facts">
                 <div>
                   <dt>Amount</dt>
@@ -182,6 +262,15 @@
                   <dd id="detail-confidence"></dd>
                 </div>
               </dl>
+              <section class="reasoning">
+                <h3>Source provenance</h3>
+                <p id="source-provenance"></p>
+                <dl id="extracted-fields" class="detail-facts"></dl>
+              </section>
+              <section class="reasoning">
+                <h3>Review history</h3>
+                <div id="review-history"></div>
+              </section>
               <section class="reasoning">
                 <h3>Reasoning</h3>
                 <p id="detail-explanation"></p>
@@ -214,8 +303,8 @@
                 </div>
                 <label for="review-note">Reviewer note</label>
                 <textarea id="review-note" name="reviewer_note" rows="3" placeholder="Why this was approved, rejected, or changed"></textarea>
-                <label>
-                  <input name="risk_acknowledged" type="checkbox" />
+                <label for="risk-acknowledged">
+                  <input id="risk-acknowledged" name="risk_acknowledged" type="checkbox" />
                   I acknowledge the highlighted risk flags.
                 </label>
                 <div class="review-actions">

@@ -221,6 +221,25 @@ class ServerApiTest(unittest.TestCase):
             )
         self.assertEqual(raised.exception.code, 400)
 
+    def test_company_profile_is_revisioned_and_returned_with_workspace(self):
+        result = self._json_request(
+            "/api/profile",
+            {
+                "name": "Synthetic Example AB",
+                "accounting_method": "cash",
+                "fiscal_year_start": "2026-01-01",
+                "fiscal_year_end": "2026-12-31",
+                "currency": "SEK",
+                "voucher_series": "BP",
+                "organization_number": "",
+                "expected_workspace_revision": self.session["workspace_revision"],
+            },
+            method="POST",
+        )
+        workspace = self._json_request("/api/workspace")
+        self.assertEqual(workspace["company_profile"]["name"], "Synthetic Example AB")
+        self.assertEqual(workspace["revision"], result["workspace_revision"])
+
     def test_sample_load_refuses_nonempty_workspace(self):
         workspace = self._json_request(
             "/api/load-sample",

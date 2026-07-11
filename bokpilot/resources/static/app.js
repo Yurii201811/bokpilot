@@ -4,6 +4,13 @@ const state = {
   statusFilter: "all",
   importPreview: null,
   token: null,
+  search: "",
+  riskFilter: "all",
+  kindFilter: "all",
+  confidenceFilter: "all",
+  unresolvedFilter: "all",
+  sortKey: "date",
+  sortDirection: 1,
 };
 
 const formatter = new Intl.NumberFormat("sv-SE", {
@@ -29,12 +36,19 @@ const els = {
   manualForm: document.querySelector("#manual-form"),
   manualDate: document.querySelector("#manual-date"),
   statusFilter: document.querySelector("#status-filter"),
+  searchFilter: document.querySelector("#search-filter"),
+  riskFilter: document.querySelector("#risk-filter"),
+  kindFilter: document.querySelector("#kind-filter"),
+  confidenceFilter: document.querySelector("#confidence-filter"),
+  unresolvedFilter: document.querySelector("#unresolved-filter"),
   table: document.querySelector("#items-table"),
   empty: document.querySelector("#detail-empty"),
   detail: document.querySelector("#detail-content"),
   exportPreview: document.querySelector("#export-preview"),
   toast: document.querySelector("#toast"),
   reviewForm: document.querySelector("#review-form"),
+  profileForm: document.querySelector("#profile-form"),
+  errorSummary: document.querySelector("#error-summary"),
 };
 
 els.manualDate.valueAsDate = new Date();
@@ -52,9 +66,18 @@ async function request(path, options = {}) {
     : await response.text();
   if (!response.ok) {
     const message = payload?.error?.message || payload?.error || payload || "Request failed";
+    showError(message, payload?.error?.fields || {});
     throw new Error(message);
   }
+  els.errorSummary.hidden = true;
   return payload;
+}
+
+function showError(message, fields = {}) {
+  const details = Object.values(fields);
+  els.errorSummary.textContent = [message, ...details].join(" ");
+  els.errorSummary.hidden = false;
+  els.errorSummary.focus?.();
 }
 
 async function refresh() {
@@ -63,6 +86,17 @@ async function refresh() {
     state.selectedId = state.workspace.items[0].id;
   }
   render();
+  populateProfile();
+  document.querySelector("#demo-banner").hidden = !state.workspace.demo_mode;
+}
+
+function populateProfile() {
+  const profile = state.workspace?.company_profile;
+  if (!profile) return;
+  for (const [key, value] of Object.entries(profile)) {
+    const control = els.profileForm.elements.namedItem(key);
+    if (control && value != null) control.value = value;
+  }
 }
 
 function render() {
@@ -87,24 +121,17 @@ function renderTable() {
       const suggestion = item.suggestion;
       const row = document.createElement("tr");
       row.classList.toggle("selected", item.id === state.selectedId);
-      row.tabIndex = 0;
-      row.addEventListener("click", () => selectItem(item.id));
-      row.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          selectItem(item.id);
-        }
-      });
       row.innerHTML = `
-        <td><strong>${escapeHtml(item.id)}</strong></td>
-        <td>${escapeHtml(raw.date)}</td>
-        <td>${escapeHtml(raw.description)}</td>
-        <td class="${Number(raw.amount_minor) < 0 ? "amount-negative" : "amount-positive"}">${formatter.format(Number(raw.amount_minor) / 100)}</td>
-        <td>${escapeHtml(suggestion.bas_account)} ${escapeHtml(suggestion.bas_account_name)}</td>
-        <td>${escapeHtml(String(suggestion.vat_rate))}%</td>
-        <td><span class="confidence ${Number(suggestion.confidence) < 0.7 ? "low" : ""}">${percentFormatter.format(Number(suggestion.confidence))}</span></td>
-        <td><span class="status-pill ${escapeHtml(item.status)}">${statusLabel(item.status)}</span></td>
+        <td data-label="Item"><button class="button review-item" type="button">Review ${escapeHtml(item.id)}</button></td>
+        <td data-label="Date">${escapeHtml(raw.date)}</td>
+        <td data-label="Description">${escapeHtml(raw.description)}</td>
+        <td data-label="Amount" class="${Number(raw.amount_minor) < 0 ? "amount-negative" : "amount-positive"}">${formatter.format(Number(raw.amount_minor) / 100)}</td>
+        <td data-label="BAS">${escapeHtml(suggestion.bas_account)} ${escapeHtml(suggestion.bas_account_name)}</td>
+        <td data-label="VAT">${escapeHtml(String(suggestion.vat_rate))}%</td>
+        <td data-label="Confidence"><span class="confidence ${Number(suggestion.confidence) < 0.7 ? "low" : ""}">${percentFormatter.format(Number(suggestion.confidence))}</span></td>
+        <td data-label="Status"><span class="status-pill ${escapeHtml(item.status)}">${statusLabel(item.status)}</span></td>
       `;
+      row.querySelector(".review-item").addEventListener("click", () => selectItem(item.id));
       return row;
     })
   );
@@ -130,6 +157,23 @@ function renderDetail() {
   document.querySelector("#review-account").value = suggestion.bas_account;
   document.querySelector("#review-vat").value = String(Number(suggestion.vat_rate));
   document.querySelector("#review-note").value = item.reviewer_note || "";
+  const evidence = raw.evidence_status === "available"
+    ? `File ${raw.source_filename || "source"}, row ${raw.source_row || "n/a"}, SHA-256 ${(raw.attachment_sha256 || "").slice(0, 12)}…`
+    : raw.evidence_status === "legacy_unavailable"
+      ? "Legacy source bytes are unavailable; approval requires extra care."
+      : "Manual entry supported by reviewer attestation.";
+  document.querySelector("#source-provenance").textContent = evidence;
+  document.querySelector("#extracted-fields").replaceChildren(
+    ...Object.entries(raw.extracted || {}).map(([key, value]) => {
+      const wrapper = document.createElement("div");
+      const term = document.createElement("dt");
+      const description = document.createElement("dd");
+      term.textContent = key;
+      description.textContent = String(value);
+      wrapper.append(term, description);
+      return wrapper;
+    })
+  );
 
   const riskList = document.querySelector("#risk-list");
   riskList.replaceChildren(
@@ -159,6 +203,24 @@ function renderDetail() {
   renderMatches(item.id).catch((error) => {
     document.querySelector("#match-list").textContent = error.message;
   });
+  renderReviewHistory(item.id).catch((error) => {
+    document.querySelector("#review-history").textContent = error.message;
+  });
+}
+
+async function renderReviewHistory(sourceId) {
+  const payload = await request(`/api/sources/${sourceId}/reviews`);
+  if (state.selectedId !== sourceId) return;
+  const container = document.querySelector("#review-history");
+  if (payload.reviews.length === 0) {
+    container.textContent = "No decisions recorded yet.";
+    return;
+  }
+  container.replaceChildren(...payload.reviews.map((review) => {
+    const entry = document.createElement("p");
+    entry.textContent = `${review.action} · version ${review.prior_version} · ${review.created_at} · ${review.reviewer_note || "No note"}`;
+    return entry;
+  }));
 }
 
 async function renderMatches(sourceId) {
@@ -217,9 +279,20 @@ async function decideMatch(match, decision) {
 }
 
 function filteredItems() {
-  const items = state.workspace?.items || [];
-  if (state.statusFilter === "all") return items;
-  return items.filter((item) => item.status === state.statusFilter);
+  return (state.workspace?.items || []).filter((item) => {
+    const flags = item.suggestion?.risk_flags || [];
+    const search = `${item.id} ${item.raw?.description || ""} ${item.raw?.counterparty || ""}`.toLowerCase();
+    return (state.statusFilter === "all" || item.status === state.statusFilter)
+      && (state.kindFilter === "all" || item.raw?.source_type === state.kindFilter)
+      && (state.riskFilter === "all" || (state.riskFilter === "flagged" ? flags.length > 0 : flags.length === 0))
+      && (state.confidenceFilter === "all" || (state.confidenceFilter === "low" ? Number(item.suggestion?.confidence) < 0.7 : Number(item.suggestion?.confidence) >= 0.7))
+      && (state.unresolvedFilter === "all" || (state.unresolvedFilter === "unresolved" ? item.unresolved_duplicates > 0 : item.unresolved_duplicates === 0))
+      && (!state.search || search.includes(state.search));
+  }).sort((left, right) => {
+    const leftValue = state.sortKey === "amount" ? Number(left.raw.amount_minor) : String(left.raw.date);
+    const rightValue = state.sortKey === "amount" ? Number(right.raw.amount_minor) : String(right.raw.date);
+    return (leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0) * state.sortDirection;
+  });
 }
 
 function selectedItem() {
@@ -280,6 +353,55 @@ els.statusFilter.addEventListener("change", () => {
   state.statusFilter = els.statusFilter.value;
   renderTable();
 });
+els.searchFilter.addEventListener("input", () => {
+  state.search = els.searchFilter.value.trim().toLowerCase();
+  renderTable();
+});
+els.riskFilter.addEventListener("change", () => {
+  state.riskFilter = els.riskFilter.value;
+  renderTable();
+});
+els.kindFilter.addEventListener("change", () => {
+  state.kindFilter = els.kindFilter.value;
+  renderTable();
+});
+els.confidenceFilter.addEventListener("change", () => {
+  state.confidenceFilter = els.confidenceFilter.value;
+  renderTable();
+});
+els.unresolvedFilter.addEventListener("change", () => {
+  state.unresolvedFilter = els.unresolvedFilter.value;
+  renderTable();
+});
+for (const [id, key] of [["#sort-date", "date"], ["#sort-amount", "amount"]]) {
+  document.querySelector(id).addEventListener("click", () => {
+    state.sortDirection = state.sortKey === key ? -state.sortDirection : 1;
+    state.sortKey = key;
+    renderTable();
+  });
+}
+
+function moveSelection(offset) {
+  const items = filteredItems();
+  const index = Math.max(0, items.findIndex((item) => item.id === state.selectedId));
+  const target = items[index + offset];
+  if (target) selectItem(target.id);
+}
+document.querySelector("#previous-item").addEventListener("click", () => moveSelection(-1));
+document.querySelector("#next-item").addEventListener("click", () => moveSelection(1));
+
+els.profileForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(els.profileForm).entries());
+  data.expected_workspace_revision = state.workspace.revision;
+  const result = await request("/api/profile", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+  state.workspace.revision = result.workspace_revision;
+  state.workspace.company_profile = result.company_profile;
+  toast("Company profile saved.");
+});
 
 els.fileForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -302,7 +424,8 @@ els.fileForm.addEventListener("submit", async (event) => {
   });
   const candidates = state.importPreview.candidates.length;
   const issues = state.importPreview.issues.length;
-  els.importPreviewSummary.textContent = `${candidates} valid candidate${candidates === 1 ? "" : "s"}; ${issues} issue${issues === 1 ? "" : "s"}. Review issues before committing.`;
+  const mapped = Object.entries(state.importPreview.column_mapping || {}).map(([field, column]) => `${field}→${column}`).join(", ");
+  els.importPreviewSummary.textContent = `${candidates} valid candidate${candidates === 1 ? "" : "s"}; ${issues} issue${issues === 1 ? "" : "s"}. SHA-256 ${state.importPreview.source_sha256}. ${mapped ? `Detected: ${mapped}.` : ""}`;
   els.importPreviewIssues.replaceChildren(
     ...state.importPreview.issues.map((issue) => {
       const item = document.createElement("li");
@@ -359,6 +482,9 @@ els.reviewForm.addEventListener("submit", async (event) => {
     body: JSON.stringify(data),
   });
   await refresh();
+  const remaining = filteredItems();
+  const next = remaining.find((value) => value.status === "needs_review");
+  state.selectedId = next?.id || item.id;
   toast(`${item.id} marked ${statusLabel(data.status).toLowerCase()}.`);
   render();
 });
@@ -396,6 +522,9 @@ document.querySelectorAll("[data-export]").forEach((button) => {
 async function initialize() {
   const session = await request("/api/session");
   state.token = session.token;
+  const year = new Date().getFullYear();
+  document.querySelector("#profile-start").value ||= `${year}-01-01`;
+  document.querySelector("#profile-end").value ||= `${year}-12-31`;
   await refresh();
 }
 

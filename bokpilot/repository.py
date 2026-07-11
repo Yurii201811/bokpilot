@@ -14,6 +14,8 @@ from typing import Any, Iterable, Iterator, Mapping, Sequence
 from uuid import uuid4
 
 from .domain import (
+    AccountingMethod,
+    CompanyProfile,
     EvidenceStatus,
     JournalLine,
     Money,
@@ -300,6 +302,33 @@ class Repository:
     def source_count(self) -> int:
         with self._read_connection() as connection:
             return int(connection.execute("SELECT COUNT(*) FROM sources").fetchone()[0])
+
+    def company_profile(self) -> CompanyProfile | None:
+        with self._read_connection() as connection:
+            row = connection.execute("SELECT * FROM company_profile WHERE id = 1").fetchone()
+        if row is None:
+            return None
+        return CompanyProfile(
+            name=str(row["name"]),
+            accounting_method=AccountingMethod(str(row["accounting_method"])),
+            fiscal_year_start=date.fromisoformat(str(row["fiscal_year_start"])),
+            fiscal_year_end=date.fromisoformat(str(row["fiscal_year_end"])),
+            currency=str(row["currency"]),
+            voucher_series=str(row["voucher_series"]),
+            organization_number=(
+                str(row["organization_number"]) if row["organization_number"] is not None else None
+            ),
+        )
+
+    def save_company_profile(
+        self,
+        profile: CompanyProfile,
+        *,
+        expected_revision: int,
+    ) -> MutationResult:
+        with self.transaction() as transaction:
+            transaction.require_revision(expected_revision)
+            return transaction.save_company_profile(profile)
 
     def table_count(self, table: str) -> int:
         if table not in _APPLICATION_TABLES:
@@ -659,6 +688,33 @@ class RepositoryTransaction:
 
     def source_count(self) -> int:
         return int(self._connection.execute("SELECT COUNT(*) FROM sources").fetchone()[0])
+
+    def save_company_profile(self, profile: CompanyProfile) -> MutationResult:
+        if profile.fiscal_year_end < profile.fiscal_year_start:
+            raise ValueError("Fiscal year end cannot precede its start.")
+        self._connection.execute(
+            "INSERT INTO company_profile "
+            "(id, name, accounting_method, fiscal_year_start, fiscal_year_end, currency, "
+            "voucher_series, organization_number, created_at) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET name = excluded.name, "
+            "accounting_method = excluded.accounting_method, "
+            "fiscal_year_start = excluded.fiscal_year_start, "
+            "fiscal_year_end = excluded.fiscal_year_end, currency = excluded.currency, "
+            "voucher_series = excluded.voucher_series, "
+            "organization_number = excluded.organization_number",
+            (
+                profile.name,
+                profile.accounting_method.value,
+                profile.fiscal_year_start.isoformat(),
+                profile.fiscal_year_end.isoformat(),
+                profile.currency,
+                profile.voucher_series,
+                profile.organization_number,
+                _now(),
+            ),
+        )
+        self.dirty = True
+        return MutationResult(self.projected_revision, 1, 0, ("company-profile",))
 
     def confirmed_match_total(self, source_id: str, *, excluding: str | None = None) -> int:
         row = self._connection.execute(
@@ -1389,6 +1445,8 @@ def _compatibility_items_from_connection(
         " ORDER BY sg.id DESC LIMIT 1) AS suggestion_json "
         ", (SELECT decision_id FROM reviews rv WHERE rv.source_id = s.id "
         " ORDER BY rv.id DESC LIMIT 1) AS review_id "
+        ", (SELECT COUNT(*) FROM duplicate_candidates dc WHERE dc.status = 'unresolved' "
+        " AND (dc.source_id = s.id OR dc.candidate_source_id = s.id)) AS unresolved_duplicates "
         "FROM sources s ORDER BY s.created_at, s.id"
     ).fetchall()
     items: list[dict[str, Any]] = []
@@ -1408,6 +1466,7 @@ def _compatibility_items_from_connection(
                 "reviewed_at": str(row["reviewed_at"]) if row["reviewed_at"] is not None else None,
                 "version": int(row["version"]),
                 "review_id": str(row["review_id"]) if row["review_id"] is not None else None,
+                "unresolved_duplicates": int(row["unresolved_duplicates"]),
                 "created_at": str(row["created_at"]),
             }
         )

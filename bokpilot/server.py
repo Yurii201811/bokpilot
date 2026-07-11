@@ -69,6 +69,7 @@ class BokpilotHandler(BaseHTTPRequestHandler):
     allowed_hosts: frozenset[str]
     account_catalog: AccountCatalog
     company_profile: CompanyProfile
+    demo_mode: bool
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
@@ -86,6 +87,7 @@ class BokpilotHandler(BaseHTTPRequestHandler):
             if path == "/api/workspace":
                 workspace = self.store.load()
                 workspace["summary"] = export_summary(workspace)
+                workspace["demo_mode"] = self.demo_mode
                 self._json(workspace)
             elif path.startswith("/api/imports/") and len(path.split("/")) == 4:
                 preview = get_import_preview(self.store.repository, path.split("/")[3])
@@ -271,7 +273,7 @@ class BokpilotHandler(BaseHTTPRequestHandler):
                     source_id,
                     action=action,
                     decision=decision,
-                    profile=self.company_profile,
+                    profile=self.store.repository.company_profile() or self.company_profile,
                     catalog=self.account_catalog,
                     expected_version=payload.get("expected_version"),
                 )
@@ -295,15 +297,52 @@ class BokpilotHandler(BaseHTTPRequestHandler):
                         expected_revision=expected_revision,
                     )
                 elif format_name == "sie4i":
+                    profile = self.store.repository.company_profile()
+                    if profile is None:
+                        raise ValueError("Complete the company profile before SIE 4I export.")
                     batch = create_sie4i_batch(
                         self.store.repository,
                         review_ids,
-                        self.company_profile,
+                        profile,
                         expected_revision=expected_revision,
                     )
                 else:
                     raise ValueError("Export format must be json, csv, or sie4i.")
                 self._json(batch.to_dict(), HTTPStatus.CREATED)
+            elif path == "/api/profile":
+                profile = CompanyProfile(
+                    name=str(payload.get("name") or "").strip(),
+                    accounting_method=AccountingMethod(str(payload.get("accounting_method") or "")),
+                    fiscal_year_start=date.fromisoformat(str(payload.get("fiscal_year_start") or "")),
+                    fiscal_year_end=date.fromisoformat(str(payload.get("fiscal_year_end") or "")),
+                    currency=str(payload.get("currency") or "SEK").upper(),
+                    voucher_series=str(payload.get("voucher_series") or "").strip(),
+                    organization_number=(
+                        str(payload["organization_number"]).strip()
+                        if payload.get("organization_number")
+                        else None
+                    ),
+                )
+                if not profile.name:
+                    raise ValueError("Company name is required.")
+                result = self.store.repository.save_company_profile(
+                    profile,
+                    expected_revision=payload.get("expected_workspace_revision"),
+                )
+                self._json(
+                    {
+                        "company_profile": {
+                            "name": profile.name,
+                            "accounting_method": profile.accounting_method.value,
+                            "fiscal_year_start": profile.fiscal_year_start.isoformat(),
+                            "fiscal_year_end": profile.fiscal_year_end.isoformat(),
+                            "currency": profile.currency,
+                            "voucher_series": profile.voucher_series,
+                            "organization_number": profile.organization_number,
+                        },
+                        "workspace_revision": result.revision,
+                    }
+                )
             elif path == "/api/import/document":
                 raw = parse_document_text(
                     str(payload.get("filename") or "document.txt"),
@@ -461,6 +500,7 @@ def make_server(
     *,
     catalog: AccountCatalog | None = None,
     profile: CompanyProfile | None = None,
+    demo_mode: bool = False,
 ) -> ThreadingHTTPServer:
     require_loopback_bind(host)
     configured_store = store or WorkspaceStore()
@@ -490,6 +530,7 @@ def make_server(
                 currency="SEK",
                 voucher_series="A",
             ),
+            "demo_mode": bool(demo_mode),
         },
     )
     server.RequestHandlerClass = handler

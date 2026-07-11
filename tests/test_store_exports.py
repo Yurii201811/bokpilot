@@ -11,6 +11,24 @@ from bokpilot.store import WorkspaceStore
 
 
 class StoreExportTest(unittest.TestCase):
+    def test_displayed_risk_flags_persist_as_high_risk_source_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = WorkspaceStore(Path(tmp) / "bokpilot.sqlite3")
+            workspace = store.add_transactions(
+                [
+                    {
+                        "date": "2026-07-01",
+                        "description": "Lunch with client",
+                        "amount_minor": -10000,
+                        "currency": "SEK",
+                        "source_type": "bank_transaction",
+                    }
+                ],
+                "test",
+            )
+            source = store.repository.get_source(workspace["items"][0]["id"])
+            self.assertTrue(source.high_risk)
+
     def test_store_is_sqlite_backed_and_exposes_monotonic_revision(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "data" / "bokpilot.sqlite3"

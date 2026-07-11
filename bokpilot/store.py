@@ -42,6 +42,20 @@ class WorkspaceStore:
         workspace["items"] = list(self.repository.compatibility_items())
         workspace["events"] = list(self.repository.workspace_events())
         workspace["revision"] = self.repository.workspace_revision()
+        profile = self.repository.company_profile()
+        workspace["company_profile"] = (
+            None
+            if profile is None
+            else {
+                "name": profile.name,
+                "accounting_method": profile.accounting_method.value,
+                "fiscal_year_start": profile.fiscal_year_start.isoformat(),
+                "fiscal_year_end": profile.fiscal_year_end.isoformat(),
+                "currency": profile.currency,
+                "voucher_series": profile.voucher_series,
+                "organization_number": profile.organization_number,
+            }
+        )
         return workspace
 
     def save(
@@ -104,7 +118,12 @@ class WorkspaceStore:
                 suggestion = classify_transaction(normalized).to_dict()
                 suggestion["risk_flags"] = suggestion["risk_flags"] + duplicate_flags
                 decoded = decode_source(normalized)
-                record = replace(decoded, id=item_id, import_key=f"compat:{item_id}")
+                record = replace(
+                    decoded,
+                    id=item_id,
+                    import_key=f"compat:{item_id}",
+                    high_risk=bool(suggestion.get("risk_flags")),
+                )
                 result = transaction.import_sources([record])
                 if result.inserted != 1:
                     raise ValueError(f"Could not insert compatibility item {item_id}.")
@@ -173,7 +192,12 @@ class WorkspaceStore:
         normalized = normalize_source(raw)
         decoded = decode_source(normalized)
         import_key = str(normalized.get("import_key") or f"compat:{item_id}")
-        record = replace(decoded, id=item_id, import_key=import_key)
+        record = replace(
+            decoded,
+            id=item_id,
+            import_key=import_key,
+            high_risk=bool(suggestion.get("risk_flags")),
+        )
         inserted = transaction.import_sources([record])
         if inserted.inserted != 1:
             raise ValueError(f"Duplicate workspace item: {item_id}")

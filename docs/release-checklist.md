@@ -21,3 +21,12 @@ supersedes this pre-release value.
 - [ ] Record the specification edition, validation date, SHA-256, and result.
 
 This external validation is intentionally open. It must not be marked complete without the real service result.
+
+## Local UI evidence (2026-07-12)
+
+- [x] Desktop corridor verified at 1440×900.
+- [x] Mobile corridor verified at 390×844 with no horizontal overflow, two-column metrics, and card-style queue rows.
+- [x] Risk approval blocked until acknowledgement and a reviewer note were supplied.
+- [x] Synthetic approval advanced focus to the next review item and persisted immutable history.
+- [x] Normal server startup does not enable the synthetic accounting catalog; demo mode displays a persistent warning.
+- [x] Updated synthetic screenshots: `docs/assets/bokpilot-dashboard.png` and `docs/assets/bokpilot-mobile.png`.
