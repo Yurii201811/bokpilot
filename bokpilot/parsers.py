@@ -10,6 +10,121 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from .domain import Money
+
+
+_EXACT_MONEY_LOCALES = ("sv-SE", "en-US", "plain")
+
+
+def parse_money_exact(value: object, locale: str = "auto", currency: str = "SEK") -> Money:
+    """Parse a documented money layout into exact integer minor units."""
+    if type(value) is int or isinstance(value, Decimal):
+        return Money.from_major(value, currency)
+    if not isinstance(value, str):
+        raise TypeError("Money input must be text, an integer, or a Decimal.")
+
+    text = value.strip()
+    if not text:
+        raise ValueError("Money value is required.")
+
+    negative_parentheses = text.startswith("(") and text.endswith(")")
+    if negative_parentheses:
+        text = text[1:-1].strip()
+    normalized_currency = Money(0, currency).currency
+    text = _strip_exact_currency(text, normalized_currency)
+    if negative_parentheses and text.startswith(("+", "-")):
+        raise ValueError(f"Could not parse money value: {value!r}")
+
+    normalized_locale = _normalize_exact_locale(locale)
+    locales = _EXACT_MONEY_LOCALES if normalized_locale == "auto" else (normalized_locale,)
+    candidates = {
+        candidate
+        for candidate in (_exact_money_candidate(text, candidate_locale) for candidate_locale in locales)
+        if candidate is not None
+    }
+    if not candidates:
+        raise ValueError(f"Could not parse money value: {value!r}")
+    if len(candidates) > 1:
+        raise ValueError("Ambiguous money format; choose the source locale.")
+
+    major = candidates.pop()
+    if negative_parentheses:
+        major = -abs(major)
+    return Money.from_major(major, normalized_currency)
+
+
+def parse_date_exact(value: object) -> date:
+    """Parse a supported date layout and validate the calendar date."""
+    if type(value) is date:
+        return value
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("Date value is required.")
+    for pattern, normalized in (
+        (r"^(\d{4})-(\d{2})-(\d{2})$", r"\1-\2-\3"),
+        (r"^(\d{4})/(\d{2})/(\d{2})$", r"\1-\2-\3"),
+        (r"^(\d{4})(\d{2})(\d{2})$", r"\1-\2-\3"),
+        (r"^(\d{2})/(\d{2})/(\d{4})$", r"\3-\2-\1"),
+        (r"^(\d{2})\.(\d{2})\.(\d{4})$", r"\3-\2-\1"),
+        (r"^(\d{2})-(\d{2})-(\d{4})$", r"\3-\2-\1"),
+    ):
+        if re.fullmatch(pattern, text):
+            return date.fromisoformat(re.sub(pattern, normalized, text))
+    raise ValueError(f"Unsupported date format: {value!r}")
+
+
+def _normalize_exact_locale(locale: str) -> str:
+    normalized = str(locale or "").strip().lower()
+    aliases = {"auto": "auto", "sv-se": "sv-SE", "en-us": "en-US", "plain": "plain"}
+    if normalized not in aliases:
+        raise ValueError("Money locale must be auto, sv-SE, en-US, or plain.")
+    return aliases[normalized]
+
+
+def _strip_exact_currency(text: str, currency: str) -> str:
+    marker_pattern = r"(?P<marker>[A-Za-z]{3}|kr)"
+    prefix = re.fullmatch(rf"{marker_pattern}\s*(?P<number>.+)", text, flags=re.IGNORECASE)
+    suffix = re.fullmatch(rf"(?P<number>.+?)\s*{marker_pattern}", text, flags=re.IGNORECASE)
+    match = prefix or suffix
+    if match is None:
+        return text
+    marker = match.group("marker").upper()
+    marker_currency = "SEK" if marker == "KR" else marker
+    if marker_currency != currency:
+        raise ValueError(f"Money currency {marker_currency} does not match {currency}.")
+    return match.group("number").strip()
+
+
+def _exact_money_candidate(text: str, locale: str) -> Decimal | None:
+    patterns = {
+        "sv-SE": (
+            r"(?P<sign>[+-]?)(?P<integer>(?:\d{1,3}(?:[ \u00a0]\d{3})+|\d{1,3}(?:\.\d{3})+|\d+))"
+            r"(?:,(?P<fraction>\d+))?",
+            (" ", "\u00a0", "."),
+        ),
+        "en-US": (
+            r"(?P<sign>[+-]?)(?P<integer>(?:\d{1,3}(?:,\d{3})+|\d+))"
+            r"(?:\.(?P<fraction>\d+))?",
+            (",",),
+        ),
+        "plain": (
+            r"(?P<sign>[+-]?)(?P<integer>\d+)(?:\.(?P<fraction>\d+))?",
+            (),
+        ),
+    }
+    pattern, grouping_characters = patterns[locale]
+    match = re.fullmatch(pattern, text)
+    if match is None:
+        return None
+    integer = match.group("integer")
+    for character in grouping_characters:
+        integer = integer.replace(character, "")
+    fraction = match.group("fraction")
+    normalized = f"{match.group('sign')}{integer}"
+    if fraction is not None:
+        normalized = f"{normalized}.{fraction}"
+    return Decimal(normalized)
+
 
 def parse_money(value: Any) -> Decimal:
     text = str(value or "").strip()

@@ -1,9 +1,43 @@
 import unittest
+from datetime import date
 
-from bokpilot.parsers import parse_bank_csv, parse_document_text, parse_money
+from bokpilot.parsers import (
+    parse_bank_csv,
+    parse_date_exact,
+    parse_document_text,
+    parse_money,
+    parse_money_exact,
+)
 
 
 class ParserTest(unittest.TestCase):
+    def test_parse_money_exact_supports_locale_specific_formats(self):
+        self.assertEqual(parse_money_exact("1 248,75 SEK", "sv-SE").minor, 124875)
+        self.assertEqual(parse_money_exact("1,248.75", "en-US").minor, 124875)
+        self.assertEqual(parse_money_exact("(1 248,75 SEK)", "sv-SE").minor, -124875)
+
+    def test_parse_money_exact_rejects_ambiguous_auto_format(self):
+        with self.assertRaisesRegex(ValueError, "Ambiguous money format; choose the source locale"):
+            parse_money_exact("1,234", "auto")
+
+    def test_parse_money_exact_rejects_malformed_text(self):
+        with self.assertRaises(ValueError):
+            parse_money_exact("abc123xyz", "sv-SE")
+
+    def test_parse_money_exact_rejects_sub_minor_precision(self):
+        with self.assertRaisesRegex(ValueError, "at most two decimal places"):
+            parse_money_exact("12.3456", "en-US")
+
+    def test_parse_date_exact_supports_documented_layouts(self):
+        for value in ("2026-05-02", "2026/05/02", "20260502", "02/05/2026", "02.05.2026", "02-05-2026"):
+            with self.subTest(value=value):
+                self.assertEqual(parse_date_exact(value), date(2026, 5, 2))
+
+    def test_parse_date_exact_rejects_invalid_or_missing_dates(self):
+        for value in ("2026-99-99", "", None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                parse_date_exact(value)
+
     def test_parse_swedish_money_formats(self):
         self.assertEqual(str(parse_money("1 248,75 SEK")), "1248.75")
         self.assertEqual(str(parse_money("-59.00")), "-59.00")
