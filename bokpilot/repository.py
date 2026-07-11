@@ -292,6 +292,28 @@ class Repository:
             issues=tuple(json.loads(str(row["issues_json"]))),
         )
 
+    def migration_payload(self, source_sha256: str) -> dict[str, Any] | None:
+        with self._read_connection() as connection:
+            row = connection.execute(
+                "SELECT report_json FROM import_batches WHERE source_sha256 = ?",
+                (source_sha256,),
+            ).fetchone()
+        if row is None:
+            return None
+        payload = json.loads(str(row["report_json"]))
+        if not isinstance(payload, dict):
+            raise ValueError("Stored migration report is invalid.")
+        return payload
+
+    def migration_events(self, source_sha256: str) -> tuple[dict[str, Any], ...]:
+        payload = self.migration_payload(source_sha256)
+        if payload is None:
+            return ()
+        events = payload.get("events", [])
+        if not isinstance(events, list) or not all(isinstance(event, dict) for event in events):
+            raise ValueError("Stored migration events are invalid.")
+        return tuple(dict(event) for event in events)
+
     def explain_query_plan(self, sql: str, parameters: Sequence[Any] = ()) -> tuple[str, ...]:
         with self._read_connection() as connection:
             rows = connection.execute(f"EXPLAIN QUERY PLAN {sql}", tuple(parameters)).fetchall()
@@ -412,6 +434,45 @@ class RepositoryTransaction:
         )
         self.dirty = True
         return MutationResult(self.projected_revision, 1, 0, (identifier,))
+
+    def record_import_batch(
+        self,
+        *,
+        batch_id: str,
+        source_sha256: str,
+        report: dict[str, Any],
+        events: Sequence[dict[str, Any]],
+    ) -> MutationResult:
+        existing = self._connection.execute(
+            "SELECT 1 FROM import_batches WHERE source_sha256 = ?", (source_sha256,)
+        ).fetchone()
+        if existing is not None:
+            return MutationResult(self.projected_revision, 0, 1, ())
+        payload = {"report": dict(report), "events": [dict(event) for event in events]}
+        self._connection.execute(
+            "INSERT INTO import_batches (id, source_sha256, report_json, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                batch_id,
+                source_sha256,
+                json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                _now(),
+            ),
+        )
+        self.dirty = True
+        return MutationResult(self.projected_revision, 1, 0, (batch_id,))
+
+    def migration_payload(self, source_sha256: str) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            "SELECT report_json FROM import_batches WHERE source_sha256 = ?",
+            (source_sha256,),
+        ).fetchone()
+        if row is None:
+            return None
+        payload = json.loads(str(row["report_json"]))
+        if not isinstance(payload, dict):
+            raise ValueError("Stored migration report is invalid.")
+        return payload
 
     def _require_source(self, source_id: str) -> None:
         if self._connection.execute(
