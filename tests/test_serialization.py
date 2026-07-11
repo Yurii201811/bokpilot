@@ -15,6 +15,7 @@ from bokpilot.serialization import (
 )
 from bokpilot.store import WorkspaceStore
 from bokpilot.domain import VatTreatment
+from bokpilot.migrations import migrate_json_workspace
 from tests.helpers import source_record
 
 
@@ -92,17 +93,19 @@ class SerializationTest(unittest.TestCase):
         self.assertNotIn("debit", encoded)
         self.assertNotIn("credit", encoded)
 
-    def test_store_loads_v1_fixture_as_v2_and_saves_only_v2_money(self):
+    def test_store_requires_explicit_v1_migration_and_loads_v2_money(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "workspace.json"
-            path.write_bytes(FIXTURE.read_bytes())
-            store = WorkspaceStore(path)
-
+            source = Path(directory) / "workspace.json"
+            destination = Path(directory) / "data" / "bokpilot.sqlite3"
+            source.write_bytes(FIXTURE.read_bytes())
+            with self.assertRaisesRegex(ValueError, "explicit migration"):
+                WorkspaceStore(source)
+            migrate_json_workspace(source, destination)
+            store = WorkspaceStore(destination)
             workspace = store.load()
-            store.save(workspace)
-            persisted = json.loads(path.read_text(encoding="utf-8"))
 
         self.assertEqual(workspace["metadata"]["schema_version"], 2)
+        self.assertEqual(workspace["revision"], 1)
         raw = workspace["items"][0]["raw"]
         suggestion = workspace["items"][0]["suggestion"]
         line = suggestion["journal_lines"][0]
@@ -118,11 +121,11 @@ class SerializationTest(unittest.TestCase):
             ],
             [(19920, 0), (4980, 0), (0, 24900)],
         )
-        self.assertNotIn("amount", persisted["items"][0]["raw"])
-        self.assertNotIn("vat_amount", persisted["items"][0]["raw"])
-        self.assertNotIn("vat_amount", persisted["items"][0]["suggestion"])
-        self.assertNotIn("debit", persisted["items"][0]["suggestion"]["journal_lines"][0])
-        self.assertNotIn("credit", persisted["items"][0]["suggestion"]["journal_lines"][0])
+        self.assertNotIn("amount", raw)
+        self.assertNotIn("vat_amount", raw)
+        self.assertNotIn("vat_amount", suggestion)
+        self.assertNotIn("debit", suggestion["journal_lines"][0])
+        self.assertNotIn("credit", suggestion["journal_lines"][0])
 
     def test_codecs_reject_bool_and_float_schema_v2_minor_fields(self):
         for invalid in (True, 12.5):

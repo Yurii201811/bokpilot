@@ -1,6 +1,7 @@
 # Data model
 
-The workspace is stored as JSON:
+The workspace is persisted in a schema-v2 SQLite database. The API and
+compatibility layer expose this JSON-shaped snapshot:
 
 ```json
 {
@@ -11,6 +12,7 @@ The workspace is stored as JSON:
     "locale": "sv-SE",
     "disclaimer": "..."
   },
+  "revision": 12,
   "items": [],
   "events": []
 }
@@ -18,9 +20,17 @@ The workspace is stored as JSON:
 
 Schema 2 stores accounting money as integer minor units. For SEK, `24900`
 means `249.00 SEK`. Binary floats are not used for source amounts, VAT, debit,
-or credit values. Bokpilot can read schema-v1 workspaces containing legacy
-major-unit `amount`, `vat_amount`, `debit`, and `credit` fields; the next save
-upgrades them to schema 2 and does not write those legacy fields again.
+or credit values. Schema-v1 JSON workspaces containing legacy major-unit
+`amount`, `vat_amount`, `debit`, and `credit` fields are accepted only by the
+explicit migration command. Migration writes schema-v2 integer values to
+SQLite and preserves the source JSON.
+
+The main tables are `workspace_metadata`, `sources`, `suggestions`,
+`review_decisions`, `posting_drafts`, `posting_lines`, `attachments`,
+`exports`, `workspace_events`, and `schema_migrations`. Foreign keys,
+uniqueness constraints, and indexes enforce relationships used by the review
+workflow. The top-level `revision` is monotonic and supports optimistic
+concurrency checks for mutations.
 
 ## Item
 

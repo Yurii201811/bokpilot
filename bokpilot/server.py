@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+from typing import Sequence
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -134,12 +135,12 @@ def make_server(host: str, port: int, store: WorkspaceStore | None = None) -> Th
     return ThreadingHTTPServer((host, port), handler)
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run the local Bokpilot web app.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--data-path", type=Path, default=None)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     store = WorkspaceStore(args.data_path) if args.data_path else WorkspaceStore()
     server = make_server(args.host, args.port, store)

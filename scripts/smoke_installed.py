@@ -22,7 +22,7 @@ def smoke() -> None:
     from bokpilot.store import WorkspaceStore
 
     with tempfile.TemporaryDirectory() as directory:
-        store = WorkspaceStore(Path(directory) / "workspace.json")
+        store = WorkspaceStore(Path(directory) / "data" / "bokpilot.sqlite3")
         server = make_server("127.0.0.1", 0, store)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -58,11 +58,24 @@ def build_wheel_and_smoke() -> None:
         python = environment / "bin" / "python"
         wheel = next(wheelhouse.glob("bokpilot-*.whl"))
         subprocess.run([str(python), "-m", "pip", "install", str(wheel)], check=True)
-        subprocess.run([str(python), str(Path(__file__).resolve())], cwd="/tmp", check=True)
+        subprocess.run(
+            [str(python), str(Path(__file__).resolve()), "--installed"],
+            cwd="/tmp",
+            check=True,
+        )
+
+
+def prepare_source_checkout_import() -> None:
+    project = Path(__file__).resolve().parents[1]
+    if (project / "pyproject.toml").is_file():
+        sys.path.insert(0, str(project))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--build-wheel", action="store_true")
+    parser.add_argument("--installed", action="store_true", help=argparse.SUPPRESS)
     arguments = parser.parse_args()
+    if not arguments.installed:
+        prepare_source_checkout_import()
     build_wheel_and_smoke() if arguments.build_wheel else smoke()

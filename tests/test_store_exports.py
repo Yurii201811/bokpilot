@@ -11,6 +11,24 @@ from bokpilot.store import WorkspaceStore
 
 
 class StoreExportTest(unittest.TestCase):
+    def test_store_is_sqlite_backed_and_exposes_monotonic_revision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "data" / "bokpilot.sqlite3"
+            store = WorkspaceStore(path)
+            initial = store.load()
+            imported = store.add_transactions(
+                [{"date": "2026-05-02", "description": "Revision", "amount": -100}],
+                "test",
+            )
+            reviewed = store.review_item(imported["items"][0]["id"], {"status": "approved"})
+
+            self.assertEqual(initial["revision"], 0)
+            self.assertEqual(imported["revision"], 1)
+            self.assertEqual(reviewed["revision"], 2)
+            self.assertEqual(path.read_bytes()[:16], b"SQLite format 3\x00")
+            with self.assertRaisesRegex(ValueError, "revision"):
+                store.save(imported, expected_revision=1)
+
     def test_exports_use_explicit_minor_units_and_exact_sie_amounts(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = WorkspaceStore(Path(tmp) / "workspace.json")

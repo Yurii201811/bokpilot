@@ -24,7 +24,7 @@ The first version is deliberately local-first and dependency-light. It does not 
 - Show confidence, risk flags, and draft double-entry journal lines.
 - Let a human approve, reject, keep open, or override BAS/VAT treatment.
 - Export approved human-reviewed items only as JSON, CSV, or a basic SIE-style draft.
-- Store data locally in `data/workspace.json` by default.
+- Store data locally in `data/bokpilot.sqlite3` by default, with transactional writes and revision checks.
 - Run tests without external services.
 
 ## Quick start
@@ -46,7 +46,23 @@ Open [http://127.0.0.1:8765](http://127.0.0.1:8765), then:
 Use a separate local workspace file:
 
 ```bash
-BOKPILOT_DATA_PATH=/tmp/bokpilot-workspace.json python3 -m bokpilot --port 8765
+BOKPILOT_DATA_PATH=/tmp/bokpilot.sqlite3 python3 -m bokpilot --port 8765
+```
+
+Legacy JSON workspaces require an explicit, non-destructive migration:
+
+```bash
+python3 -m bokpilot migrate --from-json data/workspace.json --to-sqlite data/bokpilot.sqlite3
+```
+
+Create and restore integrity-checked local backups:
+
+```bash
+python3 -m bokpilot backup --to /tmp/bokpilot-backup.zip
+python3 -m bokpilot restore \
+  --from /tmp/bokpilot-backup.zip \
+  --to /tmp/restored-bokpilot \
+  --sha256 SHA256_PRINTED_BY_BACKUP
 ```
 
 Run tests:

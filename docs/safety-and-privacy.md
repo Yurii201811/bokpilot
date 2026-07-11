@@ -25,20 +25,27 @@ Treat these as human-review items even when Bokpilot suggests an account:
 
 ## Privacy model
 
-The MVP runs locally and stores data in a JSON workspace file. It does not require external APIs or AI providers.
+The MVP runs locally and stores data in a SQLite database. It does not require external APIs or AI providers.
 
 Default storage:
 
 ```text
-data/workspace.json
+data/bokpilot.sqlite3
 ```
 
 Recommended handling:
 
 - Do not commit real receipts or invoices.
 - Keep workspace files out of public repositories.
+- Keep backup archives out of public repositories too.
 - Remove or redact personal data before sharing issue reports.
 - If optional OCR or AI providers are added later, make them opt-in and document what leaves the machine.
+
+On POSIX systems Bokpilot creates the data directory and database with
+owner-only permissions. This reduces accidental exposure but does not encrypt
+the database. Backup and restore commands verify archive paths and content
+hashes; they are operational safeguards, not a substitute for an encrypted
+off-device backup policy.
 
 ## Current limitations
 
@@ -51,7 +58,7 @@ Recommended handling:
 ## Future safety work
 
 - Validated SIE 4 output with fixtures.
-- Append-only review history.
+- Expanded, user-visible review history.
 - Workspace encryption option.
 - Source document attachment checks.
 - Permissioned integrations that can create drafts but not post or pay without explicit approval.

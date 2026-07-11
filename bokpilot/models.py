@@ -1,7 +1,7 @@
 """Core data structures for Bokpilot.
 
-Bokpilot intentionally keeps the model small and serializable so users can
-inspect the local JSON workspace without a database server.
+Bokpilot intentionally keeps the model small and serializable so the API,
+exports, and legacy migration remain inspectable without a database server.
 """
 
 from __future__ import annotations

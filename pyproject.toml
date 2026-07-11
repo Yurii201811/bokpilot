@@ -24,7 +24,7 @@ classifiers = [
 ]
 
 [project.scripts]
-bokpilot = "bokpilot.server:main"
+bokpilot = "bokpilot.__main__:main"
 
 [tool.setuptools]
 packages = ["bokpilot"]

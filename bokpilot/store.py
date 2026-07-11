@@ -1,95 +1,198 @@
-"""Local JSON workspace store."""
+"""SQLite-backed v0.1 workspace compatibility wrapper."""
 
 from __future__ import annotations
 
-import json
 import os
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .models import empty_workspace
+from .repository import Repository, RepositoryTransaction
 from .rules import apply_account_override, classify_transaction
-from .serialization import normalize_source, normalize_workspace
+from .serialization import decode_source, normalize_source
 
 
 def default_data_path() -> Path:
     configured = os.environ.get("BOKPILOT_DATA_PATH")
     if configured:
         return Path(configured)
-    return Path.cwd() / "data" / "workspace.json"
+    return Path.cwd() / "data" / "bokpilot.sqlite3"
 
 
 class WorkspaceStore:
-    def __init__(self, path: Path | None = None):
-        self.path = path or default_data_path()
+    def __init__(
+        self,
+        path: Path | None = None,
+        *,
+        repository: Repository | None = None,
+    ):
+        self.path = Path(path or default_data_path())
+        if repository is None:
+            _reject_legacy_json_file(self.path)
+            repository = Repository(self.path)
+        self.repository = repository
+        self.path = repository.path
 
     def load(self) -> dict[str, Any]:
-        if not self.path.exists():
-            return normalize_workspace(empty_workspace())
-        with self.path.open("r", encoding="utf-8") as handle:
-            return normalize_workspace(json.load(handle))
-
-    def save(self, workspace: dict[str, Any]) -> dict[str, Any]:
-        normalized = normalize_workspace(workspace)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("w", encoding="utf-8") as handle:
-            json.dump(normalized, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-        return normalized
-
-    def reset(self) -> dict[str, Any]:
         workspace = empty_workspace()
-        self.save(workspace)
+        workspace["items"] = list(self.repository.compatibility_items())
+        workspace["events"] = list(self.repository.workspace_events())
+        workspace["revision"] = self.repository.workspace_revision()
         return workspace
 
+    def save(
+        self,
+        workspace: dict[str, Any],
+        *,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        requested_revision = (
+            expected_revision if expected_revision is not None else workspace.get("revision")
+        )
+        if type(requested_revision) is not int:
+            raise ValueError("Workspace save requires an integer revision.")
+        items = workspace.get("items", [])
+        events = workspace.get("events", [])
+        if not isinstance(items, list) or not isinstance(events, list):
+            raise ValueError("Workspace items and events must be lists.")
+        with self.repository.transaction() as transaction:
+            if transaction.base_revision != requested_revision:
+                raise ValueError(
+                    f"Workspace revision conflict: expected {requested_revision}, "
+                    f"current {transaction.base_revision}."
+                )
+            transaction.reset_workspace()
+            for item in items:
+                self._persist_compatibility_item(transaction, item)
+            for event in events:
+                if not isinstance(event, dict):
+                    raise ValueError("Workspace events must be objects.")
+                transaction.add_workspace_event(event)
+        return self.load()
+
+    def reset(self) -> dict[str, Any]:
+        with self.repository.transaction() as transaction:
+            transaction.reset_workspace()
+            transaction.add_workspace_event(_event("Workspace reset."))
+        return self.load()
+
     def add_transactions(self, raw_items: list[dict[str, Any]], source: str) -> dict[str, Any]:
-        workspace = self.load()
-        for raw in raw_items:
-            normalized = normalize_source(raw)
-            workspace["items"].append(_build_item(workspace, normalized, source))
-        workspace["events"].append(_event(f"Imported {len(raw_items)} item(s) from {source}."))
-        return self.save(workspace)
+        with self.repository.transaction() as transaction:
+            existing_items = list(transaction.compatibility_items())
+            next_number = transaction.next_compatibility_item_number()
+            for offset, raw in enumerate(raw_items):
+                normalized = normalize_source(raw)
+                item_id = f"BP-{next_number + offset:04d}"
+                duplicate_flags = _duplicate_flags({"items": existing_items}, normalized)
+                suggestion = classify_transaction(normalized).to_dict()
+                suggestion["risk_flags"] = suggestion["risk_flags"] + duplicate_flags
+                decoded = decode_source(normalized)
+                record = replace(decoded, id=item_id, import_key=f"compat:{item_id}")
+                result = transaction.import_sources([record])
+                if result.inserted != 1:
+                    raise ValueError(f"Could not insert compatibility item {item_id}.")
+                stored_raw = dict(normalized)
+                stored_raw["import_key"] = record.import_key
+                stored_raw["evidence_status"] = record.evidence_status.value
+                transaction.set_source_compatibility(
+                    item_id,
+                    source_label=str(source),
+                    raw=stored_raw,
+                )
+                transaction.save_suggestion_snapshot(item_id, suggestion)
+                existing_items.append(
+                    {
+                        "id": item_id,
+                        "source": str(source),
+                        "raw": stored_raw,
+                        "suggestion": suggestion,
+                    }
+                )
+            transaction.add_workspace_event(
+                _event(f"Imported {len(raw_items)} item(s) from {source}.")
+            )
+        return self.load()
 
     def review_item(self, item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        workspace = self.load()
-        target = _find_item(workspace, item_id)
         status = payload.get("status")
         if status not in {"approved", "rejected", "needs_review"}:
             raise ValueError("Review status must be approved, rejected, or needs_review.")
-        if _review_changes_suggestion(target, payload):
-            apply_account_override(target, str(payload["bas_account"]), payload.get("vat_rate"))
-        target["status"] = status
-        target["human_reviewed"] = status in {"approved", "rejected"}
-        target["reviewer_note"] = str(payload.get("reviewer_note") or "").strip()
-        target["reviewed_at"] = _now() if target["human_reviewed"] else None
-        workspace["events"].append(_event(f"{item_id} marked {status}."))
-        return self.save(workspace)
+        with self.repository.transaction() as transaction:
+            target = next(
+                (item for item in transaction.compatibility_items() if item.get("id") == item_id),
+                None,
+            )
+            if target is None:
+                raise ValueError(f"Unknown item id: {item_id}")
+            if _review_changes_suggestion(target, payload):
+                apply_account_override(
+                    target,
+                    str(payload["bas_account"]),
+                    payload.get("vat_rate"),
+                )
+                transaction.save_suggestion_snapshot(item_id, target["suggestion"])
+            human_reviewed = status in {"approved", "rejected"}
+            transaction.set_compatibility_review(
+                item_id,
+                status=status,
+                reviewer_note=str(payload.get("reviewer_note") or "").strip(),
+                reviewed_at=_now() if human_reviewed else None,
+            )
+            transaction.add_workspace_event(_event(f"{item_id} marked {status}."))
+        return self.load()
+
+    def _persist_compatibility_item(
+        self,
+        transaction: RepositoryTransaction,
+        item_value: Any,
+    ) -> None:
+        if not isinstance(item_value, dict):
+            raise ValueError("Workspace items must be objects.")
+        item_id = str(item_value.get("id") or "").strip()
+        raw = item_value.get("raw")
+        suggestion = item_value.get("suggestion")
+        if not item_id or not isinstance(raw, dict) or not isinstance(suggestion, dict):
+            raise ValueError("Workspace item id, raw, and suggestion are required.")
+        normalized = normalize_source(raw)
+        decoded = decode_source(normalized)
+        import_key = str(normalized.get("import_key") or f"compat:{item_id}")
+        record = replace(decoded, id=item_id, import_key=import_key)
+        inserted = transaction.import_sources([record])
+        if inserted.inserted != 1:
+            raise ValueError(f"Duplicate workspace item: {item_id}")
+        stored_raw = dict(normalized)
+        stored_raw["import_key"] = import_key
+        transaction.set_source_compatibility(
+            item_id,
+            source_label=str(item_value.get("source") or ""),
+            raw=stored_raw,
+            status=str(item_value.get("status") or "needs_review"),
+            reviewer_note=str(item_value.get("reviewer_note") or ""),
+            reviewed_at=(
+                str(item_value["reviewed_at"]) if item_value.get("reviewed_at") else None
+            ),
+            created_at=str(item_value["created_at"]) if item_value.get("created_at") else None,
+        )
+        transaction.save_suggestion_snapshot(item_id, suggestion)
 
 
-def _build_item(workspace: dict[str, Any], raw: dict[str, Any], source: str) -> dict[str, Any]:
-    suggestion = classify_transaction(raw)
-    item_number = len(workspace.get("items", [])) + 1
-    item_id = f"BP-{item_number:04d}"
-    duplicate_flags = _duplicate_flags(workspace, raw)
-    suggestion_dict = suggestion.to_dict()
-    suggestion_dict["risk_flags"] = suggestion_dict["risk_flags"] + duplicate_flags
-    return {
-        "id": item_id,
-        "source": source,
-        "raw": raw,
-        "suggestion": suggestion_dict,
-        "status": "needs_review",
-        "human_reviewed": False,
-        "reviewer_note": "",
-        "reviewed_at": None,
-        "created_at": _now(),
-    }
+def _reject_legacy_json_file(path: Path) -> None:
+    if not path.exists() or not path.is_file():
+        return
+    with path.open("rb") as workspace_file:
+        prefix = workspace_file.read(16)
+    if prefix != b"SQLite format 3\x00":
+        raise ValueError(
+            "Legacy JSON workspaces require explicit migration: "
+            "python3 -m bokpilot migrate --from-json SOURCE --to-sqlite DEST"
+        )
 
 
-def _duplicate_flags(workspace: dict[str, Any], raw: dict[str, Any]) -> list[str]:
+def _duplicate_flags(workspace: Mapping[str, Any], raw: dict[str, Any]) -> list[str]:
     key = (raw.get("date"), _minor_amount(raw), _normalized_description(raw))
     for item in workspace.get("items", []):
         existing = item.get("raw", {})
@@ -103,29 +206,24 @@ def _duplicate_flags(workspace: dict[str, Any], raw: dict[str, Any]) -> list[str
     return []
 
 
-def _minor_amount(raw: dict[str, Any]) -> int:
+def _minor_amount(raw: Mapping[str, Any]) -> int:
     amount_minor = raw.get("amount_minor")
     if type(amount_minor) is not int:
         raise TypeError("amount_minor must be an integer.")
     return amount_minor
 
 
-def _normalized_description(raw: dict[str, Any]) -> str:
+def _normalized_description(raw: Mapping[str, Any]) -> str:
     return re.sub(r"\s+", " ", str(raw.get("description") or "")).strip().casefold()
-
-
-def _find_item(workspace: dict[str, Any], item_id: str) -> dict[str, Any]:
-    for item in workspace.get("items", []):
-        if item.get("id") == item_id:
-            return item
-    raise ValueError(f"Unknown item id: {item_id}")
 
 
 def _review_changes_suggestion(item: dict[str, Any], payload: dict[str, Any]) -> bool:
     suggestion = item["suggestion"]
     requested_account = str(payload.get("bas_account") or "").strip()
     requested_rate = payload.get("vat_rate")
-    account_changed = bool(requested_account) and requested_account != str(suggestion.get("bas_account"))
+    account_changed = bool(requested_account) and requested_account != str(
+        suggestion.get("bas_account")
+    )
     if requested_rate in (None, ""):
         rate_changed = False
     else:

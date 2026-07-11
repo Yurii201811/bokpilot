@@ -1,6 +1,8 @@
 import tempfile
 import threading
 import unittest
+import subprocess
+import sys
 from importlib.resources import files
 from pathlib import Path
 from urllib.error import HTTPError
@@ -12,6 +14,19 @@ from bokpilot.store import WorkspaceStore
 
 
 class PackagingTest(unittest.TestCase):
+    def test_source_smoke_script_runs_from_outside_checkout(self):
+        project = Path(__file__).resolve().parents[1]
+
+        result = subprocess.run(
+            [sys.executable, str(project / "scripts" / "smoke_installed.py")],
+            cwd="/tmp",
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_runtime_assets_are_inside_package(self):
         root = files("bokpilot").joinpath("resources")
         self.assertTrue(root.joinpath("static", "index.html").is_file())
@@ -30,7 +45,7 @@ class PackagingTest(unittest.TestCase):
 
     def test_server_serves_static_assets_from_package_allowlist(self):
         with tempfile.TemporaryDirectory() as directory:
-            store = WorkspaceStore(Path(directory) / "workspace.json")
+            store = WorkspaceStore(Path(directory) / "bokpilot.sqlite3")
             server = make_server("127.0.0.1", 0, store)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()

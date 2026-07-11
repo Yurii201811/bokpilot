@@ -41,6 +41,8 @@ class ServerApiTest(unittest.TestCase):
         self.assertEqual(workspace["summary"]["total_items"], 2)
         self.assertEqual(workspace["summary"]["needs_review"], 2)
         self.assertEqual(workspace["metadata"]["schema_version"], 2)
+        self.assertIs(type(workspace["revision"]), int)
+        self.assertGreaterEqual(workspace["revision"], 1)
         self.assertEqual(workspace["items"][0]["raw"]["amount_minor"], -24900)
         self.assertIs(type(workspace["items"][0]["raw"]["amount_minor"]), int)
         self.assertNotIn("amount", workspace["items"][0]["raw"])

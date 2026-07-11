@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 from uuid import uuid4
 
 from .domain import (
@@ -97,9 +97,25 @@ class Repository:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = FULL")
             connection.executescript(_SCHEMA_SQL)
+            self._ensure_compatibility_columns(connection)
         finally:
             connection.close()
             self._harden_files()
+
+    def _ensure_compatibility_columns(self, connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(sources)").fetchall()
+        }
+        additions = {
+            "raw_json": "TEXT NOT NULL DEFAULT '{}'",
+            "source_label": "TEXT NOT NULL DEFAULT ''",
+            "reviewer_note": "TEXT NOT NULL DEFAULT ''",
+            "reviewed_at": "TEXT",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                connection.execute(f'ALTER TABLE sources ADD COLUMN "{name}" {definition}')
 
     def _harden_files(self) -> None:
         os.chmod(self.path.parent, 0o700)
@@ -378,6 +394,20 @@ class Repository:
             ).fetchall()
         return tuple(dict(row) for row in rows)
 
+    def compatibility_items(self) -> tuple[dict[str, Any], ...]:
+        with self._read_connection() as connection:
+            connection.execute("BEGIN")
+            items = _compatibility_items_from_connection(connection)
+            connection.commit()
+        return items
+
+    def workspace_events(self) -> tuple[dict[str, Any], ...]:
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM workspace_events ORDER BY id"
+            ).fetchall()
+        return tuple(dict(json.loads(str(row["payload_json"]))) for row in rows)
+
     def explain_query_plan(self, sql: str, parameters: Sequence[Any] = ()) -> tuple[str, ...]:
         with self._read_connection() as connection:
             rows = connection.execute(f"EXPLAIN QUERY PLAN {sql}", tuple(parameters)).fetchall()
@@ -393,6 +423,20 @@ class RepositoryTransaction:
     @property
     def projected_revision(self) -> int:
         return self._base_revision + (1 if self.dirty else 0)
+
+    @property
+    def base_revision(self) -> int:
+        return self._base_revision
+
+    def compatibility_items(self) -> tuple[dict[str, Any], ...]:
+        return _compatibility_items_from_connection(self._connection)
+
+    def next_compatibility_item_number(self) -> int:
+        row = self._connection.execute(
+            "SELECT COALESCE(MAX(CAST(SUBSTR(id, 4) AS INTEGER)), 0) "
+            "FROM sources WHERE id GLOB 'BP-[0-9]*'"
+        ).fetchone()
+        return int(row[0]) + 1
 
     def import_sources(self, records: Iterable[SourceRecord]) -> MutationResult:
         inserted_ids: list[str] = []
@@ -496,6 +540,98 @@ class RepositoryTransaction:
         self.dirty = True
         return MutationResult(self.projected_revision, 1, 0, (identifier,))
 
+    def set_source_compatibility(
+        self,
+        source_id: str,
+        *,
+        source_label: str,
+        raw: Mapping[str, Any],
+        status: str = "needs_review",
+        reviewer_note: str = "",
+        reviewed_at: str | None = None,
+        created_at: str | None = None,
+    ) -> None:
+        self._require_source(source_id)
+        self._connection.execute(
+            "UPDATE sources SET source_label = ?, raw_json = ?, status = ?, "
+            "reviewer_note = ?, reviewed_at = ?, created_at = COALESCE(?, created_at) "
+            "WHERE id = ?",
+            (
+                source_label,
+                json.dumps(dict(raw), ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                status,
+                reviewer_note,
+                reviewed_at,
+                created_at,
+                source_id,
+            ),
+        )
+        self.dirty = True
+
+    def save_suggestion_snapshot(self, source_id: str, snapshot: Mapping[str, Any]) -> None:
+        self._require_source(source_id)
+        rule_id = snapshot.get("rule_id")
+        rule_version = snapshot.get("rule_version")
+        self._connection.execute(
+            "INSERT INTO suggestions "
+            "(source_id, rule_id, rule_version, snapshot_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                source_id,
+                str(rule_id) if rule_id is not None else None,
+                int(rule_version) if rule_version is not None else None,
+                json.dumps(dict(snapshot), ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                _now(),
+            ),
+        )
+        self.dirty = True
+
+    def set_compatibility_review(
+        self,
+        source_id: str,
+        *,
+        status: str,
+        reviewer_note: str,
+        reviewed_at: str | None,
+    ) -> None:
+        self._require_source(source_id)
+        self._connection.execute(
+            "UPDATE sources SET status = ?, reviewer_note = ?, reviewed_at = ? WHERE id = ?",
+            (status, reviewer_note, reviewed_at, source_id),
+        )
+        self.dirty = True
+
+    def add_workspace_event(self, payload: Mapping[str, Any]) -> None:
+        self._connection.execute(
+            "INSERT INTO workspace_events (payload_json, created_at) VALUES (?, ?)",
+            (
+                json.dumps(dict(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                _now(),
+            ),
+        )
+        self.dirty = True
+
+    def reset_workspace(self) -> bool:
+        before = self._connection.total_changes
+        for table in (
+            "duplicate_decisions",
+            "matches",
+            "duplicate_candidates",
+            "posting_drafts",
+            "reviews",
+            "suggestions",
+            "source_attachments",
+            "sources",
+            "export_batches",
+            "import_batches",
+            "company_profile",
+            "workspace_events",
+        ):
+            self._connection.execute(f'DELETE FROM "{table}"')
+        changed = self._connection.total_changes > before
+        self.dirty = self.dirty or changed
+        return changed
+
     def create_export_batch(
         self,
         *,
@@ -589,7 +725,11 @@ def _source_parameters(record: SourceRecord) -> tuple[Any, ...]:
         record.source_vat_minor,
         record.matched_source_id,
         int(record.high_risk),
+        json.dumps(_source_raw_payload(record), ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        "",
         "needs_review",
+        "",
+        None,
         _now(),
     )
 
@@ -632,6 +772,63 @@ def _decision_payload(decision: ReviewDecision) -> dict[str, Any]:
     }
 
 
+def _source_raw_payload(record: SourceRecord) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "date": record.occurred_on.isoformat(),
+        "description": record.description,
+        "counterparty": record.counterparty,
+        "amount_minor": record.amount.minor,
+        "currency": record.amount.currency,
+        "source_type": record.kind.value,
+        "source_filename": record.source_filename,
+        "source_row": record.source_row,
+        "import_key": record.import_key,
+        "evidence_status": record.evidence_status.value,
+        "extracted": dict(record.extracted),
+    }
+    if record.attachment_sha256 is not None:
+        payload["attachment_sha256"] = record.attachment_sha256
+    if record.source_vat is not None:
+        payload["vat_treatment"] = record.source_vat.value
+    if record.source_vat_minor is not None:
+        payload["vat_amount_minor"] = record.source_vat_minor
+    if record.matched_source_id is not None:
+        payload["matched_source_id"] = record.matched_source_id
+    if record.high_risk:
+        payload["high_risk"] = True
+    return payload
+
+
+def _compatibility_items_from_connection(
+    connection: sqlite3.Connection,
+) -> tuple[dict[str, Any], ...]:
+    rows = connection.execute(
+        "SELECT s.*, "
+        "(SELECT snapshot_json FROM suggestions sg WHERE sg.source_id = s.id "
+        " ORDER BY sg.id DESC LIMIT 1) AS suggestion_json "
+        "FROM sources s ORDER BY s.created_at, s.id"
+    ).fetchall()
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        suggestion_json = row["suggestion_json"]
+        suggestion = json.loads(str(suggestion_json)) if suggestion_json is not None else {}
+        status = str(row["status"])
+        items.append(
+            {
+                "id": str(row["id"]),
+                "source": str(row["source_label"]),
+                "raw": dict(json.loads(str(row["raw_json"]))),
+                "suggestion": dict(suggestion),
+                "status": status,
+                "human_reviewed": status in {"approved", "rejected"},
+                "reviewer_note": str(row["reviewer_note"]),
+                "reviewed_at": str(row["reviewed_at"]) if row["reviewed_at"] is not None else None,
+                "created_at": str(row["created_at"]),
+            }
+        )
+    return tuple(items)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -661,8 +858,8 @@ INSERT INTO sources (
     id, kind, occurred_on, amount_minor, currency, description, counterparty,
     source_filename, source_row, import_key, attachment_sha256, evidence_status,
     extracted_json, source_vat, source_vat_minor, matched_source_id, high_risk,
-    status, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    raw_json, source_label, status, reviewer_note, reviewed_at, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -679,6 +876,7 @@ _APPLICATION_TABLES = {
     "duplicate_decisions",
     "matches",
     "export_batches",
+    "workspace_events",
 }
 
 
@@ -721,7 +919,11 @@ CREATE TABLE IF NOT EXISTS sources (
     source_vat_minor INTEGER,
     matched_source_id TEXT,
     high_risk INTEGER NOT NULL DEFAULT 0 CHECK (high_risk IN (0, 1)),
+    raw_json TEXT NOT NULL,
+    source_label TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL,
+    reviewer_note TEXT NOT NULL DEFAULT '',
+    reviewed_at TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -806,6 +1008,12 @@ CREATE TABLE IF NOT EXISTS export_batches (
     sha256 TEXT NOT NULL,
     byte_count INTEGER NOT NULL CHECK (byte_count >= 0),
     source_ids_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workspace_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    payload_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 

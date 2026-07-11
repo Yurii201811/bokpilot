@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 from .domain import EvidenceStatus, SourceRecord
 from .repository import Repository, SCHEMA_VERSION
-from .serialization import decode_source
+from .serialization import decode_source, normalize_source
 
 
 @dataclass(frozen=True)
@@ -73,6 +73,28 @@ def migrate_json_workspace(source: Path, destination: Path) -> MigrationReport:
             report = _report_from_stored(existing)
         else:
             imported = transaction.import_sources(records)
+            imported_ids = set(imported.ids)
+            for item in workspace.get("items", []):
+                item_id = str(item.get("id") or "")
+                if item_id not in imported_ids:
+                    continue
+                raw = normalize_source(dict(item["raw"]))
+                raw["import_key"] = f"legacy-v1:{source_sha256}:{item_id}"
+                raw["evidence_status"] = EvidenceStatus.LEGACY_UNAVAILABLE.value
+                raw.pop("attachment_sha256", None)
+                transaction.set_source_compatibility(
+                    item_id,
+                    source_label=str(item.get("source") or "legacy-v1"),
+                    raw=raw,
+                    status="needs_review",
+                    reviewer_note=str(item.get("reviewer_note") or ""),
+                    reviewed_at=None,
+                    created_at=str(item["created_at"]) if item.get("created_at") else None,
+                )
+                suggestion = item.get("suggestion")
+                if isinstance(suggestion, dict) and suggestion:
+                    normalized_suggestion = _normalize_legacy_suggestion(suggestion)
+                    transaction.save_suggestion_snapshot(item_id, normalized_suggestion)
             report = MigrationReport(
                 source_sha256=source_sha256,
                 backup_path=backup_path,
@@ -160,6 +182,28 @@ def _validated_events(workspace: Mapping[str, Any]) -> tuple[dict[str, Any], ...
             raise ValueError(f"Legacy event {index} must be an object.")
         events.append(dict(event))
     return tuple(events)
+
+
+def _normalize_legacy_suggestion(suggestion: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(suggestion)
+    if "vat_amount_minor" not in normalized and "vat_amount" in normalized:
+        from .serialization import decode_suggestion_vat
+
+        vat = decode_suggestion_vat(normalized)
+        normalized["vat_amount_minor"] = vat.minor if vat is not None else 0
+    normalized.pop("vat_amount", None)
+    normalized["journal_lines"] = [
+        _normalize_legacy_journal_line(line)
+        for line in normalized.get("journal_lines", [])
+        if isinstance(line, dict)
+    ]
+    return normalized
+
+
+def _normalize_legacy_journal_line(line: Mapping[str, Any]) -> dict[str, Any]:
+    from .serialization import decode_journal_line, encode_journal_line
+
+    return encode_journal_line(decode_journal_line(line), template=line)
 
 
 def _write_private_backup(source: Path, source_bytes: bytes) -> Path:
