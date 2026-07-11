@@ -128,8 +128,10 @@ class Repository:
             connection.rollback()
             raise
         finally:
-            self._harden_files()
-            connection.close()
+            try:
+                self._harden_files()
+            finally:
+                connection.close()
             self._harden_files()
 
     def import_sources(self, records: Sequence[SourceRecord]) -> MutationResult:
@@ -220,6 +222,7 @@ class Repository:
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("Review queue limit must be between 1 and 1000.")
         with self._read_connection() as connection:
+            connection.execute("BEGIN")
             if after is None:
                 rows = connection.execute(
                     "SELECT * FROM sources WHERE status = ? "
@@ -238,6 +241,7 @@ class Repository:
                     "SELECT revision FROM workspace_state WHERE id = 1"
                 ).fetchone()["revision"]
             )
+            connection.commit()
         visible = rows[:limit]
         records = tuple(_source_from_row(row) for row in visible)
         next_after = None
@@ -308,15 +312,19 @@ class RepositoryTransaction:
         inserted_ids: list[str] = []
         skipped = 0
         for record in records:
-            cursor = self._connection.execute(
-                _INSERT_SOURCE_SQL,
-                _source_parameters(record),
-            )
-            if cursor.rowcount == 1:
+            try:
+                self._connection.execute(_INSERT_SOURCE_SQL, _source_parameters(record))
+            except sqlite3.IntegrityError:
+                duplicate = self._connection.execute(
+                    "SELECT 1 FROM sources WHERE id = ? OR import_key = ?",
+                    (record.id, record.import_key),
+                ).fetchone()
+                if duplicate is None:
+                    raise
+                skipped += 1
+            else:
                 inserted_ids.append(record.id)
                 self.dirty = True
-            else:
-                skipped += 1
         return MutationResult(
             self.projected_revision,
             len(inserted_ids),
@@ -479,7 +487,7 @@ def _now() -> str:
 
 
 _INSERT_SOURCE_SQL = """
-INSERT OR IGNORE INTO sources (
+INSERT INTO sources (
     id, kind, occurred_on, amount_minor, currency, description, counterparty,
     source_filename, source_row, import_key, attachment_sha256, evidence_status,
     extracted_json, source_vat, source_vat_minor, matched_source_id, high_risk,

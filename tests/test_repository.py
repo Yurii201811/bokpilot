@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import stat
+import sqlite3
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -92,6 +94,15 @@ class RepositoryTest(unittest.TestCase):
         self.assertEqual(result.inserted, 1)
         self.assertEqual(result.skipped, 1)
         self.assertEqual(self.repository.source_count(), 1)
+
+    def test_import_does_not_hide_non_duplicate_constraint_errors(self):
+        invalid = replace(source_record("Invalid", -100), description=None)  # type: ignore[arg-type]
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.repository.import_sources([invalid])
+
+        self.assertEqual(self.repository.source_count(), 0)
+        self.assertEqual(self.repository.workspace_revision(), 0)
 
     def test_rollback_keeps_rows_and_revision_unchanged(self):
         committed = source_record("Committed", -100)
