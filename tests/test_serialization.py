@@ -14,12 +14,34 @@ from bokpilot.serialization import (
     encode_suggestion_vat,
 )
 from bokpilot.store import WorkspaceStore
+from bokpilot.domain import VatTreatment
+from tests.helpers import source_record
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "workspaces" / "v1-workspace.json"
 
 
 class SerializationTest(unittest.TestCase):
+    def test_source_accounting_evidence_round_trips_separately(self):
+        record = source_record(
+            "Evidence",
+            -10_000,
+            source_vat=VatTreatment.RATE_25,
+            source_vat_minor=1_900,
+            matched_source_id="invoice-1",
+            high_risk=True,
+        )
+
+        encoded = encode_source(record)
+        decoded = decode_source(encoded)
+
+        self.assertEqual(encoded["vat_treatment"], "25")
+        self.assertEqual(encoded["vat_amount_minor"], 1_900)
+        self.assertEqual(decoded.source_vat, VatTreatment.RATE_25)
+        self.assertEqual(decoded.source_vat_minor, 1_900)
+        self.assertEqual(decoded.matched_source_id, "invoice-1")
+        self.assertTrue(decoded.high_risk)
+
     def test_decode_source_accepts_legacy_major_amount(self):
         workspace = json.loads(FIXTURE.read_text(encoding="utf-8"))
 

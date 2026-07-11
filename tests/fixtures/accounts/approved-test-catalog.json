@@ -1,0 +1,15 @@
+{
+  "accounts": [
+    {"code": "1510", "name": "Synthetic customer receivables", "source_url": "https://example.invalid/test/1510", "evidence_status": "approved", "reviewer": "Synthetic test reviewer", "review_date": "2026-07-11"},
+    {"code": "1930", "name": "Synthetic bank account", "source_url": "https://example.invalid/test/1930", "evidence_status": "approved", "reviewer": "Synthetic test reviewer", "review_date": "2026-07-11"},
+    {"code": "2440", "name": "Synthetic supplier payables", "source_url": "https://example.invalid/test/2440", "evidence_status": "approved", "reviewer": "Synthetic test reviewer", "review_date": "2026-07-11"},
+    {"code": "2611", "name": "Synthetic output VAT", "source_url": "https://example.invalid/test/2611", "evidence_status": "approved", "reviewer": "Synthetic test reviewer", "review_date": "2026-07-11"},
+    {"code": "2641", "name": "Synthetic input VAT", "source_url": "https://example.invalid/test/2641", "evidence_status": "approved", "reviewer": "Synthetic test reviewer", "review_date": "2026-07-11"},
+    {"code": "3011", "name": "Synthetic domestic sales", "source_url": "https://example.invalid/test/3011", "evidence_status": "approved", "reviewer": "Synthetic test reviewer", "review_date": "2026-07-11"},
+    {"code": "3054", "name": "Synthetic VAT-free sales", "source_url": "https://example.invalid/test/3054", "evidence_status": "approved", "reviewer": "Synthetic test reviewer", "review_date": "2026-07-11"},
+    {"code": "5420", "name": "Synthetic software expense", "source_url": "https://example.invalid/test/5420", "evidence_status": "approved", "reviewer": "Synthetic test reviewer", "review_date": "2026-07-11"},
+    {"code": "6071", "name": "Synthetic representation expense", "source_url": "https://example.invalid/test/6071", "evidence_status": "approved", "reviewer": "Synthetic test reviewer", "review_date": "2026-07-11"},
+    {"code": "6570", "name": "Synthetic bank fee expense", "source_url": "https://example.invalid/test/6570", "evidence_status": "approved", "reviewer": "Synthetic test reviewer", "review_date": "2026-07-11"},
+    {"code": "6991", "name": "Synthetic external expense", "source_url": "https://example.invalid/test/6991", "evidence_status": "approved", "reviewer": "Synthetic test reviewer", "review_date": "2026-07-11"}
+  ]
+}

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
+from .domain import SourceRecord, Suggestion as SafeSuggestion, TransactionNature, VatTreatment
 from .models import JournalLine, Suggestion
 
 
@@ -123,6 +124,193 @@ EXPENSE_RULES: tuple[Rule, ...] = (
         ("Vehicle costs can depend on company car/private car treatment and mileage records.",),
     ),
 )
+
+
+@dataclass(frozen=True)
+class SuggestionRule:
+    rule_id: str
+    version: int
+    keywords: tuple[str, ...]
+    phrases: tuple[str, ...]
+    category: str
+    suggested_nature: TransactionNature
+    suggested_account: str | None
+    suggested_vat: VatTreatment
+    confidence: float
+    explanation: str
+    source_note: str = "Existing Bokpilot heuristic; qualified accounting review pending."
+    evidence_status: str = "pending_review"
+
+    def __post_init__(self) -> None:
+        if not self.rule_id.strip() or self.version < 1:
+            raise ValueError("Suggestion rules require a stable id and positive version.")
+        if not self.source_note.strip():
+            raise ValueError("Suggestion rules require a source note.")
+        if self.evidence_status not in {"pending_review", "approved"}:
+            raise ValueError("Suggestion rule evidence must be pending_review or approved.")
+
+
+SAFE_SUGGESTION_RULES: tuple[SuggestionRule, ...] = (
+    SuggestionRule(
+        "software-services",
+        1,
+        ("fortnox", "bokio", "visma", "software", "programvara", "saas", "openai", "github"),
+        ("cloud service",),
+        "Software and cloud services",
+        TransactionNature.EXPENSE,
+        "5420",
+        VatTreatment.RATE_25,
+        0.88,
+        "The source text resembles a software or cloud-service purchase.",
+    ),
+    SuggestionRule(
+        "telecom-connectivity",
+        1,
+        ("telia", "tele2", "telenor", "bredband", "internet", "mobil", "telefon"),
+        ("mobile service",),
+        "Telecom and connectivity",
+        TransactionNature.EXPENSE,
+        "6230",
+        VatTreatment.RATE_25,
+        0.86,
+        "The source text resembles a telecom or connectivity expense.",
+    ),
+    SuggestionRule(
+        "office-supplies",
+        1,
+        ("kontorsmaterial", "papper", "penna", "block", "pressbyran"),
+        ("office supplies",),
+        "Office supplies",
+        TransactionNature.EXPENSE,
+        "6110",
+        VatTreatment.RATE_25,
+        0.84,
+        "The source text resembles an office-supply purchase.",
+    ),
+    SuggestionRule(
+        "small-equipment",
+        1,
+        ("ikea", "stol", "skrivbord", "hylla", "möbel", "inventarie"),
+        ("small equipment",),
+        "Small equipment",
+        TransactionNature.EXPENSE,
+        "5410",
+        VatTreatment.RATE_25,
+        0.76,
+        "The source text resembles an equipment or furniture purchase.",
+    ),
+    SuggestionRule(
+        "bank-fees",
+        1,
+        ("bankavgift", "kortavgift"),
+        ("bank fee", "service avgift"),
+        "Bank fees",
+        TransactionNature.EXPENSE,
+        "6570",
+        VatTreatment.EXEMPT,
+        0.90,
+        "The source text resembles a bank fee.",
+    ),
+    SuggestionRule(
+        "interest-expense",
+        1,
+        ("ränta", "räntekostnad", "interest"),
+        ("loan interest",),
+        "Interest expense",
+        TransactionNature.EXPENSE,
+        "8410",
+        VatTreatment.EXEMPT,
+        0.87,
+        "The source text resembles an interest expense.",
+    ),
+    SuggestionRule(
+        "business-travel",
+        1,
+        ("sj", "taxi", "uber", "bolt", "resa", "train", "travel", "biljett"),
+        ("business travel",),
+        "Travel",
+        TransactionNature.EXPENSE,
+        "5800",
+        VatTreatment.RATE_6,
+        0.72,
+        "The source text resembles a travel expense.",
+    ),
+    SuggestionRule(
+        "meals-representation",
+        1,
+        ("mat", "restaurang", "lunch", "middag", "fika"),
+        ("business meal",),
+        "Meals and representation",
+        TransactionNature.EXPENSE,
+        "6071",
+        VatTreatment.RATE_12,
+        0.58,
+        "Meal and representation treatment requires qualified review.",
+    ),
+    SuggestionRule(
+        "vehicle-fuel",
+        1,
+        ("okq8", "bensin", "diesel", "drivmedel", "fuel"),
+        ("circle k",),
+        "Vehicle fuel",
+        TransactionNature.EXPENSE,
+        "5611",
+        VatTreatment.RATE_25,
+        0.62,
+        "The source text resembles a vehicle-fuel expense.",
+    ),
+)
+
+
+def suggest(record: SourceRecord) -> SafeSuggestion:
+    """Return a suggestion only; never construct posting lines or mutate evidence."""
+    normalized = normalize_text(
+        " ".join((record.description, record.counterparty, record.source_filename))
+    )
+    tokens = set(re.findall(r"[0-9a-zåäö]+", normalized))
+    matched = next(
+        (
+            rule
+            for rule in SAFE_SUGGESTION_RULES
+            if any(normalize_text(keyword) in tokens for keyword in rule.keywords)
+            or any(_bounded_phrase(normalized, phrase) for phrase in rule.phrases)
+        ),
+        None,
+    )
+    if matched is None:
+        return SafeSuggestion(
+            nature=TransactionNature.UNKNOWN,
+            category="Unclassified expense" if record.amount.minor < 0 else "Unclassified transaction",
+            account=None,
+            account_name=None,
+            vat=VatTreatment.UNKNOWN,
+            vat_minor=None,
+            confidence=0.0,
+            explanation="No reviewed rule matched this source record.",
+            risk_flags=("unresolved_suggestion",),
+            rule_id=None,
+            rule_version=None,
+        )
+
+    reviewed = matched.evidence_status == "approved"
+    return SafeSuggestion(
+        nature=matched.suggested_nature if reviewed else TransactionNature.UNKNOWN,
+        category=matched.category,
+        account=matched.suggested_account if reviewed else None,
+        account_name=None,
+        vat=matched.suggested_vat if reviewed else VatTreatment.UNKNOWN,
+        vat_minor=None,
+        confidence=matched.confidence if reviewed else 0.0,
+        explanation=matched.explanation,
+        risk_flags=() if reviewed else ("rule_pending_review",),
+        rule_id=matched.rule_id,
+        rule_version=matched.version,
+    )
+
+
+def _bounded_phrase(text: str, phrase: str) -> bool:
+    normalized_phrase = normalize_text(phrase)
+    return re.search(rf"(?<![0-9a-zåäö]){re.escape(normalized_phrase)}(?![0-9a-zåäö])", text) is not None
 
 
 def normalize_text(text: str) -> str:

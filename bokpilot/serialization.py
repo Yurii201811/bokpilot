@@ -7,7 +7,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, Mapping
 
-from .domain import EvidenceStatus, JournalLine, Money, SourceKind, SourceRecord
+from .domain import EvidenceStatus, JournalLine, Money, SourceKind, SourceRecord, VatTreatment
 
 
 def decode_source(payload: Mapping[str, Any]) -> SourceRecord:
@@ -32,6 +32,8 @@ def decode_source(payload: Mapping[str, Any]) -> SourceRecord:
     }.get(source_type, SourceKind.MANUAL)
     source_filename = str(payload.get("source_filename") or "")
     source_row = payload.get("source_row")
+    source_vat_amount = decode_source_vat(payload)
+    source_vat_value = payload.get("vat_treatment")
     return SourceRecord(
         id=str(payload.get("id") or ""),
         kind=kind,
@@ -45,13 +47,25 @@ def decode_source(payload: Mapping[str, Any]) -> SourceRecord:
         attachment_sha256=payload.get("attachment_sha256"),
         evidence_status=EvidenceStatus(str(payload.get("evidence_status") or "legacy_unavailable")),
         extracted=dict(payload.get("extracted") or {}),
+        source_vat=VatTreatment(str(source_vat_value)) if source_vat_value else None,
+        source_vat_minor=source_vat_amount.minor if source_vat_amount is not None else None,
+        matched_source_id=str(payload["matched_source_id"]) if payload.get("matched_source_id") else None,
+        high_risk=payload.get("high_risk", False),
     )
 
 
 def encode_source(record: SourceRecord, *, template: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Encode a source record with schema-v2 minor-unit money fields."""
     encoded = dict(template or {})
-    encoded.pop("amount", None)
+    for obsolete_or_optional in (
+        "amount",
+        "vat_amount",
+        "vat_amount_minor",
+        "vat_treatment",
+        "matched_source_id",
+        "high_risk",
+    ):
+        encoded.pop(obsolete_or_optional, None)
     encoded.update(
         {
             "date": record.occurred_on.isoformat(),
@@ -73,6 +87,14 @@ def encode_source(record: SourceRecord, *, template: Mapping[str, Any] | None = 
     encoded["evidence_status"] = record.evidence_status.value
     if record.extracted:
         encoded["extracted"] = dict(record.extracted)
+    if record.source_vat is not None:
+        encoded["vat_treatment"] = record.source_vat.value
+    if record.source_vat_minor is not None:
+        encoded["vat_amount_minor"] = record.source_vat_minor
+    if record.matched_source_id is not None:
+        encoded["matched_source_id"] = record.matched_source_id
+    if record.high_risk:
+        encoded["high_risk"] = True
     return encoded
 
 
@@ -95,7 +117,8 @@ def normalize_source(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize one source dictionary without leaking a Money object to callers."""
     record = decode_source(payload)
     encoded = encode_source(record, template=payload)
-    return encode_source_vat(decode_source_vat(payload), template=encoded)
+    source_vat = Money(record.source_vat_minor, record.amount.currency) if record.source_vat_minor is not None else None
+    return encode_source_vat(source_vat, template=encoded)
 
 
 def decode_suggestion_vat(payload: Mapping[str, Any], currency: str = "SEK") -> Money | None:

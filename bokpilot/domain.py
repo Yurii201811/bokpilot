@@ -83,6 +83,20 @@ class SourceRecord:
     attachment_sha256: str | None
     evidence_status: EvidenceStatus
     extracted: Mapping[str, str] = field(default_factory=dict)
+    source_vat: VatTreatment | None = None
+    source_vat_minor: int | None = None
+    matched_source_id: str | None = None
+    high_risk: bool = False
+
+    def __post_init__(self) -> None:
+        if self.source_vat is not None and not isinstance(self.source_vat, VatTreatment):
+            raise TypeError("Source VAT treatment must be a VatTreatment value.")
+        if self.source_vat_minor is not None and type(self.source_vat_minor) is not int:
+            raise TypeError("Source VAT minor units must be an integer.")
+        if self.source_vat_minor is not None and self.source_vat_minor < 0:
+            raise ValueError("Source VAT minor units cannot be negative.")
+        if type(self.high_risk) is not bool:
+            raise TypeError("SourceRecord.high_risk must be a boolean.")
 
 
 @dataclass(frozen=True)
@@ -123,3 +137,30 @@ class Suggestion:
     risk_flags: tuple[str, ...]
     rule_id: str | None
     rule_version: int | None
+
+
+@dataclass(frozen=True)
+class ReviewDecision:
+    nature: TransactionNature
+    account: str
+    vat: VatTreatment
+    vat_minor: int | None
+    reviewer_note: str
+    risk_acknowledged: bool
+
+    def __post_init__(self) -> None:
+        if self.vat_minor is not None and type(self.vat_minor) is not int:
+            raise TypeError("Review VAT minor units must be an integer.")
+        if self.vat_minor is not None and self.vat_minor < 0:
+            raise ValueError("Review VAT minor units cannot be negative.")
+        if type(self.risk_acknowledged) is not bool:
+            raise TypeError("risk_acknowledged must be a boolean.")
+
+
+@dataclass(frozen=True)
+class PostingDraft:
+    source_id: str
+    lines: tuple[JournalLine, ...]
+    rule_id: str | None
+    rule_version: int | None
+    issues: tuple[str, ...]
