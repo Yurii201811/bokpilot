@@ -126,6 +126,23 @@ class Repository:
                 "version": "INTEGER NOT NULL DEFAULT 1",
                 "updated_at": "TEXT",
             },
+            "reviews": {
+                "decision_id": "TEXT",
+                "prior_version": "INTEGER NOT NULL DEFAULT 1",
+                "action": "TEXT NOT NULL DEFAULT 'reviewed'",
+                "before_suggestion_json": "TEXT NOT NULL DEFAULT '{}'",
+                "posting_json": "TEXT NOT NULL DEFAULT '{}'",
+                "rule_id": "TEXT",
+                "rule_version": "INTEGER",
+            },
+            "duplicate_candidates": {
+                "version": "INTEGER NOT NULL DEFAULT 1",
+            },
+            "duplicate_decisions": {
+                "decision_id": "TEXT",
+                "prior_version": "INTEGER NOT NULL DEFAULT 1",
+                "source_id": "TEXT",
+            },
         }
         for table, table_additions in additions.items():
             columns = {
@@ -358,6 +375,50 @@ class Repository:
             values.append(payload)
         return tuple(values)
 
+    def unresolved_duplicate_ids(self, source_id: str) -> tuple[str, ...]:
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                "SELECT id FROM duplicate_candidates WHERE status = 'unresolved' "
+                "AND (source_id = ? OR candidate_source_id = ?) ORDER BY id",
+                (source_id, source_id),
+            ).fetchall()
+        return tuple(str(row["id"]) for row in rows)
+
+    def latest_suggestion_snapshot(self, source_id: str) -> dict[str, Any]:
+        with self._read_connection() as connection:
+            row = connection.execute(
+                "SELECT snapshot_json FROM suggestions WHERE source_id = ? ORDER BY id DESC LIMIT 1",
+                (source_id,),
+            ).fetchone()
+        return {} if row is None else dict(json.loads(str(row["snapshot_json"])))
+
+    def review_history(self, source_id: str) -> tuple[dict[str, Any], ...]:
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                "SELECT decision_id, prior_version, action, reviewer_note, risk_acknowledged, "
+                "snapshot_json, before_suggestion_json, posting_json, rule_id, rule_version, created_at "
+                "FROM reviews WHERE source_id = ? ORDER BY id",
+                (source_id,),
+            ).fetchall()
+        history: list[dict[str, Any]] = []
+        for row in rows:
+            history.append(
+                {
+                    "decision_id": str(row["decision_id"] or "legacy-review"),
+                    "prior_version": int(row["prior_version"]),
+                    "action": str(row["action"]),
+                    "reviewer_note": str(row["reviewer_note"]),
+                    "risk_acknowledged": bool(row["risk_acknowledged"]),
+                    "selected": dict(json.loads(str(row["snapshot_json"]))),
+                    "before_suggestion": dict(json.loads(str(row["before_suggestion_json"]))),
+                    "posting": dict(json.loads(str(row["posting_json"]))),
+                    "rule_id": str(row["rule_id"]) if row["rule_id"] is not None else None,
+                    "rule_version": int(row["rule_version"]) if row["rule_version"] is not None else None,
+                    "created_at": str(row["created_at"]),
+                }
+            )
+        return tuple(history)
+
     def list_review_queue(
         self,
         *,
@@ -531,6 +592,9 @@ class RepositoryTransaction:
             tuple(import_keys),
         ).fetchall()
         return {str(row["import_key"]): str(row["id"]) for row in rows}
+
+    def source_count(self) -> int:
+        return int(self._connection.execute("SELECT COUNT(*) FROM sources").fetchone()[0])
 
     def confirmed_match_total(self, source_id: str, *, excluding: str | None = None) -> int:
         row = self._connection.execute(
@@ -857,6 +921,138 @@ class RepositoryTransaction:
         )
         return new_version, source_version
 
+    def record_review_revision(
+        self,
+        source_id: str,
+        *,
+        decision: ReviewDecision,
+        draft: PostingDraft,
+        action: str,
+        expected_version: int,
+        before_suggestion: Mapping[str, Any],
+    ) -> tuple[str, int]:
+        row = self._connection.execute(
+            "SELECT version FROM sources WHERE id = ?", (source_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown source id: {source_id}")
+        current = int(row["version"])
+        if current != expected_version:
+            raise ValueError(
+                f"Item version conflict: expected {expected_version}, current {current}."
+            )
+        decision_id = f"review-{uuid4().hex}"
+        posting_payload = {
+            "source_id": draft.source_id,
+            "lines": [
+                {
+                    "account": line.account,
+                    "account_name": line.account_name,
+                    "debit_minor": line.debit_minor,
+                    "credit_minor": line.credit_minor,
+                }
+                for line in draft.lines
+            ],
+            "issues": list(draft.issues),
+        }
+        self._connection.execute(
+            "INSERT INTO reviews "
+            "(source_id, nature, account, vat, vat_minor, reviewer_note, risk_acknowledged, "
+            "snapshot_json, created_at, decision_id, prior_version, action, "
+            "before_suggestion_json, posting_json, rule_id, rule_version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                source_id,
+                decision.nature.value,
+                decision.account,
+                decision.vat.value,
+                decision.vat_minor,
+                decision.reviewer_note,
+                int(decision.risk_acknowledged),
+                json.dumps(_decision_payload(decision), sort_keys=True, separators=(",", ":")),
+                _now(),
+                decision_id,
+                current,
+                action,
+                json.dumps(dict(before_suggestion), ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                json.dumps(posting_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                draft.rule_id,
+                draft.rule_version,
+            ),
+        )
+        status = {"approved": "approved", "rejected": "rejected", "reopened": "needs_review"}[action]
+        self._connection.execute(
+            "UPDATE sources SET status = ?, reviewer_note = ?, reviewed_at = ?, "
+            "version = version + 1 WHERE id = ?",
+            (status, decision.reviewer_note, _now(), source_id),
+        )
+        self.dirty = True
+        return decision_id, current + 1
+
+    def record_duplicate_decision_revision(
+        self,
+        source_id: str,
+        *,
+        candidate_id: str,
+        decision: str,
+        note: str,
+        expected_version: int,
+    ) -> tuple[str, int]:
+        source = self._connection.execute(
+            "SELECT version FROM sources WHERE id = ?", (source_id,)
+        ).fetchone()
+        if source is None:
+            raise ValueError(f"Unknown source id: {source_id}")
+        current = int(source["version"])
+        if current != expected_version:
+            raise ValueError(
+                f"Item version conflict: expected {expected_version}, current {current}."
+            )
+        candidate = self._connection.execute(
+            "SELECT version, source_id, candidate_source_id FROM duplicate_candidates WHERE id = ?",
+            (candidate_id,),
+        ).fetchone()
+        if candidate is None or source_id not in {
+            str(candidate["source_id"]),
+            str(candidate["candidate_source_id"]),
+        }:
+            raise ValueError("Unknown duplicate candidate for this source.")
+        decision_id = f"duplicate-decision-{uuid4().hex}"
+        self._connection.execute(
+            "INSERT INTO duplicate_decisions "
+            "(candidate_id, decision, reviewer_note, created_at, decision_id, prior_version, source_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                candidate_id,
+                decision,
+                note,
+                _now(),
+                decision_id,
+                int(candidate["version"]),
+                source_id,
+            ),
+        )
+        self._connection.execute(
+            "UPDATE duplicate_candidates SET status = ?, version = version + 1 WHERE id = ?",
+            (decision, candidate_id),
+        )
+        status = "duplicate" if decision == "confirmed_duplicate" else "needs_review"
+        self._connection.execute(
+            "UPDATE sources SET status = ?, version = version + 1 WHERE id = ?",
+            (status, source_id),
+        )
+        self.add_workspace_event(
+            {
+                "type": "duplicate_decision",
+                "decision_id": decision_id,
+                "candidate_id": candidate_id,
+                "source_id": source_id,
+                "decision": decision,
+                "note": note,
+            }
+        )
+        return decision_id, current + 1
+
     def set_source_compatibility(
         self,
         source_id: str,
@@ -1144,6 +1340,7 @@ def _compatibility_items_from_connection(
                 "human_reviewed": status in {"approved", "rejected"},
                 "reviewer_note": str(row["reviewer_note"]),
                 "reviewed_at": str(row["reviewed_at"]) if row["reviewed_at"] is not None else None,
+                "version": int(row["version"]),
                 "created_at": str(row["created_at"]),
             }
         )
@@ -1280,6 +1477,13 @@ CREATE TABLE IF NOT EXISTS reviews (
     reviewer_note TEXT NOT NULL,
     risk_acknowledged INTEGER NOT NULL CHECK (risk_acknowledged IN (0, 1)),
     snapshot_json TEXT NOT NULL,
+    decision_id TEXT,
+    prior_version INTEGER NOT NULL DEFAULT 1,
+    action TEXT NOT NULL DEFAULT 'reviewed',
+    before_suggestion_json TEXT NOT NULL DEFAULT '{{}}',
+    posting_json TEXT NOT NULL DEFAULT '{{}}',
+    rule_id TEXT,
+    rule_version INTEGER,
     created_at TEXT NOT NULL
 );
 
@@ -1308,6 +1512,7 @@ CREATE TABLE IF NOT EXISTS duplicate_candidates (
     source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
     candidate_source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
     status TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
 );
 
@@ -1316,6 +1521,9 @@ CREATE TABLE IF NOT EXISTS duplicate_decisions (
     candidate_id TEXT NOT NULL REFERENCES duplicate_candidates(id) ON DELETE RESTRICT,
     decision TEXT NOT NULL,
     reviewer_note TEXT NOT NULL,
+    decision_id TEXT,
+    prior_version INTEGER NOT NULL DEFAULT 1,
+    source_id TEXT,
     created_at TEXT NOT NULL
 );
 

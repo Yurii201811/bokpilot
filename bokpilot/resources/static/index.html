@@ -214,6 +214,10 @@
                 </div>
                 <label for="review-note">Reviewer note</label>
                 <textarea id="review-note" name="reviewer_note" rows="3" placeholder="Why this was approved, rejected, or changed"></textarea>
+                <label>
+                  <input name="risk_acknowledged" type="checkbox" />
+                  I acknowledge the highlighted risk flags.
+                </label>
                 <div class="review-actions">
                   <button class="button success" type="submit" data-status="approved">Approve</button>
                   <button class="button warning" type="submit" data-status="needs_review">Keep open</button>

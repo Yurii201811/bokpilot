@@ -74,14 +74,27 @@ class WorkspaceStore:
                 transaction.add_workspace_event(event)
         return self.load()
 
-    def reset(self) -> dict[str, Any]:
+    def reset(self, *, expected_revision: int | None = None) -> dict[str, Any]:
         with self.repository.transaction() as transaction:
+            if expected_revision is not None:
+                transaction.require_revision(expected_revision)
             transaction.reset_workspace()
             transaction.add_workspace_event(_event("Workspace reset."))
         return self.load()
 
-    def add_transactions(self, raw_items: list[dict[str, Any]], source: str) -> dict[str, Any]:
+    def add_transactions(
+        self,
+        raw_items: list[dict[str, Any]],
+        source: str,
+        *,
+        expected_revision: int | None = None,
+        require_empty: bool = False,
+    ) -> dict[str, Any]:
         with self.repository.transaction() as transaction:
+            if expected_revision is not None:
+                transaction.require_revision(expected_revision)
+            if require_empty and transaction.source_count() != 0:
+                raise ValueError("Workspace is not empty; sample loading was refused.")
             existing_items = list(transaction.compatibility_items())
             next_number = transaction.next_compatibility_item_number()
             for offset, raw in enumerate(raw_items):

@@ -10,8 +10,15 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 
-def request(url: str, *, body: bytes | None = None) -> tuple[int, bytes]:
+def request(
+    url: str,
+    *,
+    body: bytes | None = None,
+    token: str | None = None,
+) -> tuple[int, bytes]:
     headers = {"Content-Type": "application/json"} if body is not None else {}
+    if token is not None:
+        headers["X-Bokpilot-Token"] = token
     method = "POST" if body is not None else "GET"
     with urlopen(Request(url, data=body, headers=headers, method=method), timeout=5) as response:
         return response.status, response.read()
@@ -33,7 +40,17 @@ def smoke() -> None:
                 status, payload = request(base + path)
                 if status != 200 or not payload:
                     raise RuntimeError(f"Installed asset smoke failed for {path}.")
-            status, payload = request(base + "/api/load-sample", body=b"{}")
+            status, session_payload = request(base + "/api/session")
+            session = json.loads(session_payload.decode("utf-8"))
+            if status != 200 or not session.get("token"):
+                raise RuntimeError("Installed session-token smoke failed.")
+            status, payload = request(
+                base + "/api/load-sample",
+                body=json.dumps(
+                    {"expected_workspace_revision": session["workspace_revision"]}
+                ).encode("utf-8"),
+                token=session["token"],
+            )
             workspace = json.loads(payload.decode("utf-8"))
             if status != 200 or len(workspace["items"]) < 10:
                 raise RuntimeError("Installed sample-data smoke failed.")

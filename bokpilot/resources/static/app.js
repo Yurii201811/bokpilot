@@ -3,6 +3,7 @@ const state = {
   selectedId: null,
   statusFilter: "all",
   importPreview: null,
+  token: null,
 };
 
 const formatter = new Intl.NumberFormat("sv-SE", {
@@ -39,8 +40,10 @@ const els = {
 els.manualDate.valueAsDate = new Date();
 
 async function request(path, options = {}) {
+  const method = options.method || "GET";
+  const mutationHeaders = method === "GET" ? {} : { "X-Bokpilot-Token": state.token || "" };
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers: { "Content-Type": "application/json", ...mutationHeaders, ...(options.headers || {}) },
     ...options,
   });
   const contentType = response.headers.get("Content-Type") || "";
@@ -48,7 +51,8 @@ async function request(path, options = {}) {
     ? await response.json()
     : await response.text();
   if (!response.ok) {
-    throw new Error(payload.error || payload || "Request failed");
+    const message = payload?.error?.message || payload?.error || payload || "Request failed";
+    throw new Error(message);
   }
   return payload;
 }
@@ -251,17 +255,24 @@ function toast(message) {
 }
 
 els.loadSample.addEventListener("click", async () => {
-  state.workspace = await request("/api/load-sample", { method: "POST", body: "{}" });
+  state.workspace = await request("/api/load-sample", {
+    method: "POST",
+    body: JSON.stringify({ expected_workspace_revision: state.workspace.revision }),
+  });
   state.selectedId = state.workspace.items[0]?.id || null;
   toast("Sample Swedish bookkeeping scenarios loaded.");
   render();
 });
 
 els.reset.addEventListener("click", async () => {
-  state.workspace = await request("/api/reset", { method: "POST", body: "{}" });
+  if (!window.confirm("Reset this workspace? Bokpilot will create a verified backup first.")) return;
+  state.workspace = await request("/api/reset", {
+    method: "POST",
+    body: JSON.stringify({ confirmation: "RESET", expected_revision: state.workspace.revision }),
+  });
   state.selectedId = null;
   els.exportPreview.textContent = "Approve at least one item to preview an export.";
-  toast("Workspace reset.");
+  toast(`Workspace reset. Backup SHA-256: ${state.workspace.backup.sha256.slice(0, 12)}…`);
   render();
 });
 
@@ -340,10 +351,14 @@ els.reviewForm.addEventListener("submit", async (event) => {
   if (!item) return;
   const data = Object.fromEntries(new FormData(els.reviewForm).entries());
   data.status = submitter?.dataset.status || "needs_review";
-  state.workspace = await request(`/api/items/${item.id}/review`, {
+  data.nature = Number(item.raw.amount_minor) < 0 ? "expense" : "revenue";
+  data.expected_version = item.version;
+  data.risk_acknowledged = Boolean(data.risk_acknowledged);
+  await request(`/api/sources/${item.id}/review`, {
     method: "POST",
     body: JSON.stringify(data),
   });
+  await refresh();
   toast(`${item.id} marked ${statusLabel(data.status).toLowerCase()}.`);
   render();
 });
@@ -361,7 +376,13 @@ document.querySelectorAll("[data-export]").forEach((button) => {
   });
 });
 
-refresh().catch((error) => {
+async function initialize() {
+  const session = await request("/api/session");
+  state.token = session.token;
+  await refresh();
+}
+
+initialize().catch((error) => {
   els.exportPreview.textContent = error.message;
   toast(error.message);
 });

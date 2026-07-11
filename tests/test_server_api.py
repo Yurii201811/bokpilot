@@ -9,6 +9,7 @@ from urllib.request import Request, urlopen
 
 from bokpilot.server import make_server
 from bokpilot.store import WorkspaceStore
+from tests.helpers import approved_test_catalog, company_profile
 
 
 class ServerApiTest(unittest.TestCase):
@@ -16,11 +17,14 @@ class ServerApiTest(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         store = WorkspaceStore(Path(self.temp_dir.name) / "workspace.json")
         self.store = store
-        self.server = make_server("127.0.0.1", 0, store)
+        self.server = make_server(
+            "127.0.0.1", 0, store, catalog=approved_test_catalog(), profile=company_profile()
+        )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         host, port = self.server.server_address
         self.base_url = f"http://{host}:{port}"
+        self.session = self._json_request("/api/session")
 
     def tearDown(self):
         self.server.shutdown()
@@ -77,8 +81,34 @@ class ServerApiTest(unittest.TestCase):
         first_id = workspace["items"][0]["id"]
         second_id = workspace["items"][1]["id"]
 
-        self._json_request(f"/api/items/{first_id}/review", {"status": "approved"}, method="POST")
-        self._json_request(f"/api/items/{second_id}/review", {"status": "rejected"}, method="POST")
+        first = workspace["items"][0]
+        second = workspace["items"][1]
+        self._json_request(
+            f"/api/sources/{first_id}/review",
+            {
+                "status": "approved",
+                "nature": "expense",
+                "bas_account": first["suggestion"]["bas_account"],
+                "vat_rate": str(first["suggestion"]["vat_rate"]),
+                "reviewer_note": "Synthetic test approval",
+                "risk_acknowledged": True,
+                "expected_version": first["version"],
+            },
+            method="POST",
+        )
+        self._json_request(
+            f"/api/sources/{second_id}/review",
+            {
+                "status": "rejected",
+                "nature": "expense",
+                "bas_account": second["suggestion"]["bas_account"],
+                "vat_rate": str(second["suggestion"]["vat_rate"]),
+                "reviewer_note": "Synthetic test rejection",
+                "risk_acknowledged": True,
+                "expected_version": second["version"],
+            },
+            method="POST",
+        )
 
         export_packet = self._text_request("/api/export/json")
 
@@ -174,9 +204,50 @@ class ServerApiTest(unittest.TestCase):
             )
         self.assertEqual(raised.exception.code, 400)
 
+    def test_sample_load_refuses_nonempty_workspace(self):
+        workspace = self._json_request(
+            "/api/load-sample",
+            {"expected_workspace_revision": self.session["workspace_revision"]},
+            method="POST",
+        )
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request(
+                "/api/load-sample",
+                {"expected_workspace_revision": workspace["revision"]},
+                method="POST",
+            )
+        payload = json.loads(raised.exception.read())
+        self.assertEqual(raised.exception.code, 409)
+        self.assertEqual(payload["error"]["code"], "workspace_not_empty")
+
+    def test_reset_requires_confirmation_and_creates_verified_backup(self):
+        workspace = self._json_request(
+            "/api/load-sample",
+            {"expected_workspace_revision": self.session["workspace_revision"]},
+            method="POST",
+        )
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request(
+                "/api/reset",
+                {"confirmation": "no", "expected_revision": workspace["revision"]},
+                method="POST",
+            )
+        self.assertEqual(raised.exception.code, 400)
+
+        reset = self._json_request(
+            "/api/reset",
+            {"confirmation": "RESET", "expected_revision": workspace["revision"]},
+            method="POST",
+        )
+        self.assertEqual(reset["items"], [])
+        self.assertEqual(len(reset["backup"]["sha256"]), 64)
+        self.assertTrue(Path(reset["backup"]["path"]).is_file())
+
     def _json_request(self, path, payload=None, method="GET", expected_status=200):
         body = None if payload is None else json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json"} if body is not None else {}
+        if method != "GET":
+            headers["X-Bokpilot-Token"] = self.session["token"]
         request = Request(f"{self.base_url}{path}", data=body, headers=headers, method=method)
         with urlopen(request, timeout=5) as response:
             self.assertEqual(response.status, expected_status)
