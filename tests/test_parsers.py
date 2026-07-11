@@ -36,6 +36,19 @@ class ParserTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "date"):
             manual_transaction({"description": "Manual", "amount": "100.00"})
 
+    def test_manual_entries_require_and_preserve_attestation(self):
+        with self.assertRaisesRegex(ValueError, "attestation"):
+            manual_transaction({"date": "2026-07-01", "amount": "100.00"})
+        value = manual_transaction(
+            {
+                "date": "2026-07-01",
+                "amount": "100.00",
+                "reviewer_note": "Matched to the signed cash log.",
+            }
+        )
+        self.assertEqual(value["evidence_status"], "manual_attested")
+        self.assertEqual(value["extracted"]["manual_attestation"], "Matched to the signed cash log.")
+
     def test_parse_money_exact_supports_locale_specific_formats(self):
         self.assertEqual(parse_money_exact("1 248,75 SEK", "sv-SE").minor, 124875)
         self.assertEqual(parse_money_exact("1,248.75", "en-US").minor, 124875)

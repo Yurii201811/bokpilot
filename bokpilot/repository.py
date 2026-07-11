@@ -103,19 +103,40 @@ class Repository:
             self._harden_files()
 
     def _ensure_compatibility_columns(self, connection: sqlite3.Connection) -> None:
-        columns = {
-            str(row["name"])
-            for row in connection.execute("PRAGMA table_info(sources)").fetchall()
-        }
         additions = {
-            "raw_json": "TEXT NOT NULL DEFAULT '{}'",
-            "source_label": "TEXT NOT NULL DEFAULT ''",
-            "reviewer_note": "TEXT NOT NULL DEFAULT ''",
-            "reviewed_at": "TEXT",
+            "sources": {
+                "raw_json": "TEXT NOT NULL DEFAULT '{}'",
+                "source_label": "TEXT NOT NULL DEFAULT ''",
+                "reviewer_note": "TEXT NOT NULL DEFAULT ''",
+                "reviewed_at": "TEXT",
+                "version": "INTEGER NOT NULL DEFAULT 1",
+            },
+            "source_attachments": {
+                "original_filename": "TEXT NOT NULL DEFAULT ''",
+                "media_type": "TEXT NOT NULL DEFAULT 'application/octet-stream'",
+            },
+            "import_batches": {
+                "batch_type": "TEXT NOT NULL DEFAULT 'migration'",
+                "status": "TEXT NOT NULL DEFAULT 'committed'",
+                "updated_at": "TEXT",
+            },
+            "matches": {
+                "score": "INTEGER NOT NULL DEFAULT 0",
+                "reasons_json": "TEXT NOT NULL DEFAULT '[]'",
+                "version": "INTEGER NOT NULL DEFAULT 1",
+                "updated_at": "TEXT",
+            },
         }
-        for name, definition in additions.items():
-            if name not in columns:
-                connection.execute(f'ALTER TABLE sources ADD COLUMN "{name}" {definition}')
+        for table, table_additions in additions.items():
+            columns = {
+                str(row["name"])
+                for row in connection.execute(f'PRAGMA table_info("{table}")').fetchall()
+            }
+            for name, definition in table_additions.items():
+                if name not in columns:
+                    connection.execute(
+                        f'ALTER TABLE "{table}" ADD COLUMN "{name}" {definition}'
+                    )
 
     def _harden_files(self) -> None:
         os.chmod(self.path.parent, 0o700)
@@ -170,6 +191,8 @@ class Repository:
         path: Path,
         sha256: str,
         byte_count: int,
+        original_filename: str = "",
+        media_type: str = "application/octet-stream",
     ) -> MutationResult:
         _verify_registered_file(Path(path), sha256, byte_count)
         with self.transaction() as transaction:
@@ -178,6 +201,8 @@ class Repository:
                 path=Path(path),
                 sha256=sha256,
                 byte_count=byte_count,
+                original_filename=original_filename,
+                media_type=media_type,
             )
 
     def create_export_batch(
@@ -277,6 +302,62 @@ class Repository:
             ).fetchone()
             return _source_from_row(row) if row is not None else None
 
+    def all_sources(self) -> tuple[SourceRecord, ...]:
+        with self._read_connection() as connection:
+            rows = connection.execute("SELECT * FROM sources ORDER BY occurred_on, id").fetchall()
+        return tuple(_source_from_row(row) for row in rows)
+
+    def source_version(self, source_id: str) -> int:
+        with self._read_connection() as connection:
+            row = connection.execute(
+                "SELECT version FROM sources WHERE id = ?", (source_id,)
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown source id: {source_id}")
+        return int(row["version"])
+
+    def import_batch(self, batch_id: str) -> dict[str, Any] | None:
+        with self._read_connection() as connection:
+            row = connection.execute(
+                "SELECT id, source_sha256, report_json, batch_type, status, created_at, updated_at "
+                "FROM import_batches WHERE id = ?",
+                (batch_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        payload = dict(row)
+        payload["report"] = json.loads(str(payload.pop("report_json")))
+        return payload
+
+    def uncommitted_preview_ids(self) -> tuple[str, ...]:
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                "SELECT id FROM import_batches "
+                "WHERE batch_type = 'preview' AND status = 'previewed' ORDER BY id"
+            ).fetchall()
+        return tuple(str(row["id"]) for row in rows)
+
+    def match_record(self, match_id: str) -> dict[str, Any] | None:
+        with self._read_connection() as connection:
+            row = connection.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+        if row is None:
+            return None
+        payload = dict(row)
+        payload["reasons"] = tuple(json.loads(str(payload.pop("reasons_json"))))
+        return payload
+
+    def match_records_for_source(self, source_id: str) -> tuple[dict[str, Any], ...]:
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM matches WHERE source_id = ? ORDER BY id", (source_id,)
+            ).fetchall()
+        values = []
+        for row in rows:
+            payload = dict(row)
+            payload["reasons"] = tuple(json.loads(str(payload.pop("reasons_json"))))
+            values.append(payload)
+        return tuple(values)
+
     def list_review_queue(
         self,
         *,
@@ -359,7 +440,8 @@ class Repository:
     def migration_payload(self, source_sha256: str) -> dict[str, Any] | None:
         with self._read_connection() as connection:
             row = connection.execute(
-                "SELECT report_json FROM import_batches WHERE source_sha256 = ?",
+                "SELECT report_json FROM import_batches "
+                "WHERE source_sha256 = ? AND batch_type = 'migration'",
                 (source_sha256,),
             ).fetchone()
         if row is None:
@@ -430,6 +512,52 @@ class RepositoryTransaction:
 
     def compatibility_items(self) -> tuple[dict[str, Any], ...]:
         return _compatibility_items_from_connection(self._connection)
+
+    def require_revision(self, expected_revision: int) -> None:
+        if type(expected_revision) is not int:
+            raise ValueError("Expected workspace revision must be an integer.")
+        if self.base_revision != expected_revision:
+            raise ValueError(
+                f"Workspace revision conflict: expected {expected_revision}, "
+                f"current {self.base_revision}."
+            )
+
+    def source_ids_for_import_keys(self, import_keys: Sequence[str]) -> dict[str, str]:
+        if not import_keys:
+            return {}
+        placeholders = ",".join("?" for _ in import_keys)
+        rows = self._connection.execute(
+            f"SELECT id, import_key FROM sources WHERE import_key IN ({placeholders})",
+            tuple(import_keys),
+        ).fetchall()
+        return {str(row["import_key"]): str(row["id"]) for row in rows}
+
+    def confirmed_match_total(self, source_id: str, *, excluding: str | None = None) -> int:
+        row = self._connection.execute(
+            "SELECT COALESCE(SUM(amount_minor), 0) AS total FROM matches "
+            "WHERE status = 'confirmed' AND (source_id = ? OR matched_source_id = ?) "
+            "AND (? IS NULL OR id <> ?)",
+            (source_id, source_id, excluding, excluding),
+        ).fetchone()
+        return int(row["total"])
+
+    def require_source_version_without_attachment(
+        self,
+        source_id: str,
+        expected_version: int,
+    ) -> None:
+        row = self._connection.execute(
+            "SELECT version, attachment_sha256 FROM sources WHERE id = ?", (source_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown source id: {source_id}")
+        current = int(row["version"])
+        if current != expected_version:
+            raise ValueError(
+                f"Source version conflict: expected {expected_version}, current {current}."
+            )
+        if row["attachment_sha256"] is not None:
+            raise ValueError("Source evidence attachment already exists and cannot be overwritten.")
 
     def next_compatibility_item_number(self) -> int:
         row = self._connection.execute(
@@ -522,6 +650,8 @@ class RepositoryTransaction:
         path: Path,
         sha256: str,
         byte_count: int,
+        original_filename: str = "",
+        media_type: str = "application/octet-stream",
     ) -> MutationResult:
         self._require_source(source_id)
         existing = self._connection.execute(
@@ -533,12 +663,199 @@ class RepositoryTransaction:
         identifier = f"attachment-{uuid4().hex}"
         self._connection.execute(
             "INSERT INTO source_attachments "
-            "(id, source_id, sha256, path, byte_count, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (identifier, source_id, sha256, str(path), byte_count, _now()),
+            "(id, source_id, sha256, path, byte_count, original_filename, media_type, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                identifier,
+                source_id,
+                sha256,
+                str(path),
+                byte_count,
+                original_filename,
+                media_type,
+                _now(),
+            ),
+        )
+        self._connection.execute(
+            "UPDATE sources SET attachment_sha256 = ?, evidence_status = ?, version = version + 1 "
+            "WHERE id = ?",
+            (sha256, EvidenceStatus.AVAILABLE.value, source_id),
         )
         self.dirty = True
         return MutationResult(self.projected_revision, 1, 0, (identifier,))
+
+    def save_import_preview(
+        self,
+        *,
+        batch_id: str,
+        source_sha256: str,
+        report: Mapping[str, Any],
+    ) -> MutationResult:
+        existing = self._connection.execute(
+            "SELECT id FROM import_batches WHERE source_sha256 = ? AND batch_type = 'preview'",
+            (source_sha256,),
+        ).fetchone()
+        if existing is not None:
+            return MutationResult(self.projected_revision, 0, 1, (str(existing["id"]),))
+        self._connection.execute(
+            "INSERT INTO import_batches "
+            "(id, source_sha256, report_json, batch_type, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'preview', 'previewed', ?, ?)",
+            (
+                batch_id,
+                source_sha256,
+                json.dumps(dict(report), ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                _now(),
+                _now(),
+            ),
+        )
+        self.dirty = True
+        return MutationResult(self.projected_revision, 1, 0, (batch_id,))
+
+    def update_import_preview(
+        self,
+        batch_id: str,
+        *,
+        report: Mapping[str, Any],
+        status: str,
+    ) -> None:
+        cursor = self._connection.execute(
+            "UPDATE import_batches SET report_json = ?, status = ?, updated_at = ? "
+            "WHERE id = ? AND batch_type = 'preview'",
+            (
+                json.dumps(dict(report), ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                status,
+                _now(),
+                batch_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError(f"Unknown import batch: {batch_id}")
+        self.dirty = True
+
+    def delete_uncommitted_preview(self, batch_id: str) -> bool:
+        cursor = self._connection.execute(
+            "DELETE FROM import_batches "
+            "WHERE id = ? AND batch_type = 'preview' AND status = 'previewed'",
+            (batch_id,),
+        )
+        if cursor.rowcount:
+            self.dirty = True
+            return True
+        return False
+
+    def create_duplicate_candidates(self, source_ids: Sequence[str]) -> tuple[str, ...]:
+        created: list[str] = []
+        for source_id in source_ids:
+            source = self._connection.execute(
+                "SELECT * FROM sources WHERE id = ?", (source_id,)
+            ).fetchone()
+            if source is None:
+                continue
+            rows = self._connection.execute(
+                "SELECT id FROM sources WHERE id <> ? AND import_key <> ? "
+                "AND occurred_on = ? AND amount_minor = ? AND currency = ? "
+                "AND lower(trim(description)) = lower(trim(?))",
+                (
+                    source_id,
+                    source["import_key"],
+                    source["occurred_on"],
+                    source["amount_minor"],
+                    source["currency"],
+                    source["description"],
+                ),
+            ).fetchall()
+            for row in rows:
+                pair = sorted((source_id, str(row["id"])))
+                identifier = "duplicate-" + hashlib.sha256("\0".join(pair).encode()).hexdigest()[:24]
+                cursor = self._connection.execute(
+                    "INSERT OR IGNORE INTO duplicate_candidates "
+                    "(id, source_id, candidate_source_id, status, created_at) "
+                    "VALUES (?, ?, ?, 'unresolved', ?)",
+                    (identifier, pair[0], pair[1], _now()),
+                )
+                if cursor.rowcount:
+                    created.append(identifier)
+                    self.dirty = True
+        return tuple(created)
+
+    def decide_match(
+        self,
+        *,
+        match_id: str,
+        source_id: str,
+        matched_source_id: str,
+        decision: str,
+        matched_minor: int,
+        expected_version: int,
+        score: int,
+        reasons: Sequence[str],
+    ) -> tuple[int, int]:
+        self._require_source(source_id)
+        self._require_source(matched_source_id)
+        existing = self._connection.execute(
+            "SELECT version FROM matches WHERE id = ?", (match_id,)
+        ).fetchone()
+        current_version = int(existing["version"]) if existing is not None else 1
+        if current_version != expected_version:
+            raise ValueError(
+                f"Match version conflict: expected {expected_version}, current {current_version}."
+            )
+        if existing is None:
+            new_version = 2
+            self._connection.execute(
+                "INSERT INTO matches "
+                "(id, source_id, matched_source_id, amount_minor, status, score, reasons_json, "
+                "version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    match_id,
+                    source_id,
+                    matched_source_id,
+                    matched_minor,
+                    decision,
+                    score,
+                    json.dumps(list(reasons), separators=(",", ":")),
+                    new_version,
+                    _now(),
+                    _now(),
+                ),
+            )
+        else:
+            new_version = current_version + 1
+            self._connection.execute(
+                "UPDATE matches SET amount_minor = ?, status = ?, score = ?, reasons_json = ?, "
+                "version = ?, updated_at = ? WHERE id = ?",
+                (
+                    matched_minor,
+                    decision,
+                    score,
+                    json.dumps(list(reasons), separators=(",", ":")),
+                    new_version,
+                    _now(),
+                    match_id,
+                ),
+            )
+        self._connection.execute(
+            "UPDATE sources SET version = version + 1 WHERE id IN (?, ?)",
+            (source_id, matched_source_id),
+        )
+        self.add_workspace_event(
+            {
+                "type": "match_decision",
+                "match_id": match_id,
+                "source_id": source_id,
+                "matched_source_id": matched_source_id,
+                "decision": decision,
+                "matched_minor": matched_minor,
+            }
+        )
+        self.dirty = True
+        source_version = int(
+            self._connection.execute(
+                "SELECT version FROM sources WHERE id = ?", (source_id,)
+            ).fetchone()["version"]
+        )
+        return new_version, source_version
 
     def set_source_compatibility(
         self,
@@ -669,18 +986,21 @@ class RepositoryTransaction:
         events: Sequence[dict[str, Any]],
     ) -> MutationResult:
         existing = self._connection.execute(
-            "SELECT 1 FROM import_batches WHERE source_sha256 = ?", (source_sha256,)
+            "SELECT 1 FROM import_batches WHERE source_sha256 = ? AND batch_type = 'migration'",
+            (source_sha256,),
         ).fetchone()
         if existing is not None:
             return MutationResult(self.projected_revision, 0, 1, ())
         payload = {"report": dict(report), "events": [dict(event) for event in events]}
         self._connection.execute(
-            "INSERT INTO import_batches (id, source_sha256, report_json, created_at) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO import_batches "
+            "(id, source_sha256, report_json, batch_type, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'migration', 'committed', ?, ?)",
             (
                 batch_id,
                 source_sha256,
                 json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                _now(),
                 _now(),
             ),
         )
@@ -689,7 +1009,8 @@ class RepositoryTransaction:
 
     def migration_payload(self, source_sha256: str) -> dict[str, Any] | None:
         row = self._connection.execute(
-            "SELECT report_json FROM import_batches WHERE source_sha256 = ?",
+            "SELECT report_json FROM import_batches "
+            "WHERE source_sha256 = ? AND batch_type = 'migration'",
             (source_sha256,),
         ).fetchone()
         if row is None:
@@ -924,6 +1245,7 @@ CREATE TABLE IF NOT EXISTS sources (
     status TEXT NOT NULL,
     reviewer_note TEXT NOT NULL DEFAULT '',
     reviewed_at TEXT,
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
     created_at TEXT NOT NULL
 );
 
@@ -933,6 +1255,8 @@ CREATE TABLE IF NOT EXISTS source_attachments (
     sha256 TEXT NOT NULL,
     path TEXT NOT NULL,
     byte_count INTEGER NOT NULL CHECK (byte_count >= 0),
+    original_filename TEXT NOT NULL DEFAULT '',
+    media_type TEXT NOT NULL DEFAULT 'application/octet-stream',
     created_at TEXT NOT NULL,
     UNIQUE (source_id, sha256)
 );
@@ -971,9 +1295,12 @@ CREATE TABLE IF NOT EXISTS posting_drafts (
 
 CREATE TABLE IF NOT EXISTS import_batches (
     id TEXT PRIMARY KEY,
-    source_sha256 TEXT NOT NULL UNIQUE,
+    source_sha256 TEXT NOT NULL,
     report_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    batch_type TEXT NOT NULL DEFAULT 'migration',
+    status TEXT NOT NULL DEFAULT 'committed',
+    created_at TEXT NOT NULL,
+    updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS duplicate_candidates (
@@ -998,7 +1325,11 @@ CREATE TABLE IF NOT EXISTS matches (
     matched_source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
     amount_minor INTEGER NOT NULL,
     status TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    score INTEGER NOT NULL DEFAULT 0,
+    reasons_json TEXT NOT NULL DEFAULT '[]',
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+    created_at TEXT NOT NULL,
+    updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS export_batches (
@@ -1019,6 +1350,9 @@ CREATE TABLE IF NOT EXISTS workspace_events (
 
 CREATE UNIQUE INDEX IF NOT EXISTS source_import_key_uq
 ON sources(import_key);
+
+CREATE UNIQUE INDEX IF NOT EXISTS import_batch_type_hash_uq
+ON import_batches(batch_type, source_sha256);
 
 CREATE INDEX IF NOT EXISTS review_queue_idx
 ON sources(status, occurred_on, id);

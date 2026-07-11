@@ -2,6 +2,7 @@ const state = {
   workspace: null,
   selectedId: null,
   statusFilter: "all",
+  importPreview: null,
 };
 
 const formatter = new Intl.NumberFormat("sv-SE", {
@@ -19,6 +20,11 @@ const els = {
   reset: document.querySelector("#reset"),
   fileForm: document.querySelector("#file-form"),
   fileInput: document.querySelector("#file-input"),
+  importKind: document.querySelector("#import-kind"),
+  importPreview: document.querySelector("#import-preview"),
+  importPreviewSummary: document.querySelector("#import-preview-summary"),
+  importPreviewIssues: document.querySelector("#import-preview-issues"),
+  commitImport: document.querySelector("#commit-import"),
   manualForm: document.querySelector("#manual-form"),
   manualDate: document.querySelector("#manual-date"),
   statusFilter: document.querySelector("#status-filter"),
@@ -146,6 +152,64 @@ function renderDetail() {
       return div;
     })
   );
+  renderMatches(item.id).catch((error) => {
+    document.querySelector("#match-list").textContent = error.message;
+  });
+}
+
+async function renderMatches(sourceId) {
+  const payload = await request(`/api/sources/${sourceId}/matches`);
+  if (state.selectedId !== sourceId) return;
+  const list = document.querySelector("#match-list");
+  if (payload.matches.length === 0) {
+    list.textContent = "No same-currency candidates within the matching window.";
+    return;
+  }
+  list.replaceChildren(
+    ...payload.matches.map((match) => {
+      const row = document.createElement("div");
+      row.className = "journal-line";
+      const explanation = document.createElement("div");
+      const title = document.createElement("strong");
+      title.textContent = `${match.matched_source_id} · score ${match.score}`;
+      const reasons = document.createElement("span");
+      reasons.textContent = match.reasons.join("; ");
+      explanation.append(title, reasons);
+      const actions = document.createElement("div");
+      if (match.status === "confirmed" || match.status === "rejected") {
+        actions.textContent = match.status;
+      } else {
+        const confirm = document.createElement("button");
+        confirm.className = "button success";
+        confirm.type = "button";
+        confirm.textContent = "Confirm";
+        confirm.addEventListener("click", () => decideMatch(match, "confirmed"));
+        const reject = document.createElement("button");
+        reject.className = "button ghost";
+        reject.type = "button";
+        reject.textContent = "Reject";
+        reject.addEventListener("click", () => decideMatch(match, "rejected"));
+        actions.append(confirm, reject);
+      }
+      row.append(explanation, actions);
+      return row;
+    })
+  );
+}
+
+async function decideMatch(match, decision) {
+  await request(`/api/matches/${match.id}/decision`, {
+    method: "POST",
+    body: JSON.stringify({
+      source_id: match.source_id,
+      matched_source_id: match.matched_source_id,
+      decision,
+      matched_minor: decision === "confirmed" ? match.suggested_minor : 0,
+      expected_version: match.version,
+    }),
+  });
+  toast(`Match ${decision}.`);
+  await renderMatches(match.source_id);
 }
 
 function filteredItems() {
@@ -213,15 +277,45 @@ els.fileForm.addEventListener("submit", async (event) => {
     toast("Choose a file first.");
     return;
   }
-  const content = await file.text();
-  const endpoint = file.name.toLowerCase().endsWith(".csv") ? "/api/import/bank-csv" : "/api/import/document";
-  state.workspace = await request(endpoint, {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const mediaType = file.type || (file.name.toLowerCase().endsWith(".csv") ? "text/csv" : "text/plain");
+  state.importPreview = await request("/api/imports/preview", {
     method: "POST",
-    body: JSON.stringify({ filename: file.name, content, kind: endpoint.includes("document") ? "document" : "bank_csv" }),
+    body: JSON.stringify({
+      filename: file.name,
+      kind: els.importKind.value,
+      media_type: `${mediaType}; charset=utf-8`,
+      content_base64: bytesToBase64(bytes),
+      locale: "auto",
+    }),
   });
-  state.selectedId = state.workspace.items.at(-1)?.id || state.selectedId;
+  const candidates = state.importPreview.candidates.length;
+  const issues = state.importPreview.issues.length;
+  els.importPreviewSummary.textContent = `${candidates} valid candidate${candidates === 1 ? "" : "s"}; ${issues} issue${issues === 1 ? "" : "s"}. Review issues before committing.`;
+  els.importPreviewIssues.replaceChildren(
+    ...state.importPreview.issues.map((issue) => {
+      const item = document.createElement("li");
+      item.textContent = `${issue.source_row ? `Row ${issue.source_row}: ` : ""}${issue.message}`;
+      return item;
+    })
+  );
+  els.importPreview.hidden = false;
+  els.commitImport.disabled = candidates === 0 || state.importPreview.issues.some((issue) => issue.code === "mapping_required");
+  toast(`${file.name} previewed without creating review items.`);
+});
+
+els.commitImport.addEventListener("click", async () => {
+  if (!state.importPreview) return;
+  const result = await request(`/api/imports/${state.importPreview.batch_id}/commit`, {
+    method: "POST",
+    body: JSON.stringify({ expected_workspace_revision: state.importPreview.workspace_revision }),
+  });
+  await refresh();
+  state.selectedId = result.created_ids.at(-1) || result.existing_ids.at(-1) || state.selectedId;
+  state.importPreview = null;
+  els.importPreview.hidden = true;
   els.fileForm.reset();
-  toast(`${file.name} imported.`);
+  toast(`${result.created_ids.length} new review item${result.created_ids.length === 1 ? "" : "s"} committed.`);
   render();
 });
 
@@ -271,3 +365,12 @@ refresh().catch((error) => {
   els.exportPreview.textContent = error.message;
   toast(error.message);
 });
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}

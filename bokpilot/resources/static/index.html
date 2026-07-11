@@ -72,10 +72,22 @@
           </div>
           <div class="intake-grid">
             <form id="file-form" class="intake-panel">
+              <label for="import-kind">File type</label>
+              <select id="import-kind" name="kind">
+                <option value="bank_transaction">Bank transactions (CSV)</option>
+                <option value="receipt">Receipt (text)</option>
+                <option value="supplier_invoice">Supplier invoice (text)</option>
+                <option value="customer_invoice">Customer invoice (text)</option>
+              </select>
               <label for="file-input">Receipt, invoice, or bank CSV</label>
               <input id="file-input" name="file" type="file" accept=".csv,.txt,.md,.text" />
-              <button class="button" type="submit">Import file</button>
+              <button class="button" type="submit">Preview file</button>
               <p class="field-help">CSV needs date, description, and amount columns. Text files can use labels like Supplier, Date, Total, VAT, Description.</p>
+              <div id="import-preview" class="review-warning" hidden>
+                <span id="import-preview-summary"></span>
+                <ul id="import-preview-issues"></ul>
+                <button id="commit-import" class="button primary" type="button">Commit valid rows</button>
+              </div>
             </form>
             <form id="manual-form" class="intake-panel">
               <div class="form-row">
@@ -96,6 +108,8 @@
                   <input id="manual-amount" name="amount" type="number" step="0.01" placeholder="-249.00" required />
                 </div>
               </div>
+              <label for="manual-note">Attestation note</label>
+              <textarea id="manual-note" name="reviewer_note" rows="2" placeholder="Why this manual entry is supported" required></textarea>
               <button class="button" type="submit">Add transaction</button>
             </form>
           </div>
@@ -176,6 +190,11 @@
               <section>
                 <h3>Draft journal lines</h3>
                 <div id="journal-lines" class="journal-lines"></div>
+              </section>
+              <section id="match-panel">
+                <h3>Possible source matches</h3>
+                <p>Suggestions are explainable and require an explicit human decision.</p>
+                <div id="match-list" class="journal-lines"></div>
               </section>
               <form id="review-form" class="review-form">
                 <div class="form-row split">

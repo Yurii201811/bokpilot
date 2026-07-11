@@ -1,4 +1,5 @@
 import json
+import base64
 import tempfile
 import threading
 import unittest
@@ -14,6 +15,7 @@ class ServerApiTest(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         store = WorkspaceStore(Path(self.temp_dir.name) / "workspace.json")
+        self.store = store
         self.server = make_server("127.0.0.1", 0, store)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -107,6 +109,70 @@ class ServerApiTest(unittest.TestCase):
                 with self.assertRaises(HTTPError) as raised:
                     self._json_request(path, payload, method="POST", expected_status=201)
                 self.assertEqual(raised.exception.code, 400)
+
+    def test_preview_commit_and_match_routes(self):
+        content = b"Datum;Beskrivning;Belopp\n2026-07-01;Invoice 42;249,00\n"
+        preview = self._json_request(
+            "/api/imports/preview",
+            {
+                "kind": "bank_transaction",
+                "filename": "bank.csv",
+                "media_type": "text/csv; charset=utf-8",
+                "content_base64": base64.b64encode(content).decode("ascii"),
+                "locale": "sv-SE",
+            },
+            method="POST",
+            expected_status=201,
+        )
+        loaded = self._json_request(f"/api/imports/{preview['batch_id']}")
+        self.assertEqual(loaded["source_sha256"], preview["source_sha256"])
+        self.assertFalse(loaded["committed"])
+
+        committed = self._json_request(
+            f"/api/imports/{preview['batch_id']}/commit",
+            {"expected_workspace_revision": preview["workspace_revision"]},
+            method="POST",
+        )
+        source_id = committed["created_ids"][0]
+        self.assertGreater(committed["workspace_revision"], preview["workspace_revision"])
+        self.assertEqual(self._json_request(f"/api/sources/{source_id}/matches")["matches"], [])
+
+    def test_source_attachment_route_is_add_only_and_versioned(self):
+        workspace = self.store.add_transactions(
+            [
+                {
+                    "date": "2026-07-01",
+                    "description": "Manual evidence target",
+                    "amount_minor": 10000,
+                    "currency": "SEK",
+                    "source_type": "manual",
+                    "source_filename": "manual-entry",
+                    "evidence_status": "manual_attested",
+                    "extracted": {"manual_attestation": "Signed cash log"},
+                }
+            ],
+            "manual",
+        )
+        source_id = workspace["items"][0]["id"]
+        payload = {
+            "filename": "receipt.txt",
+            "media_type": "text/plain",
+            "content_base64": base64.b64encode(b"original evidence").decode("ascii"),
+            "expected_version": 1,
+        }
+
+        attached = self._json_request(
+            f"/api/sources/{source_id}/attachment", payload, method="POST", expected_status=201
+        )
+        self.assertEqual(attached["source_version"], 2)
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request(
+                f"/api/sources/{source_id}/attachment",
+                {**payload, "expected_version": 2},
+                method="POST",
+                expected_status=201,
+            )
+        self.assertEqual(raised.exception.code, 400)
 
     def _json_request(self, path, payload=None, method="GET", expected_status=200):
         body = None if payload is None else json.dumps(payload).encode("utf-8")

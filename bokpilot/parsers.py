@@ -259,6 +259,9 @@ def manual_transaction(payload: dict[str, Any]) -> dict[str, Any]:
         parsed_date = parse_date(payload["date"]).isoformat()
     except ValueError as exc:
         raise ValueError(f"Invalid manual transaction date: {payload.get('date')!r}.") from exc
+    attestation_note = str(payload.get("reviewer_note") or "").strip()
+    if not attestation_note:
+        raise ValueError("Manual entries require a reviewer attestation note.")
     currency = str(payload.get("currency") or "SEK").strip().upper()
     amount = parse_money(payload.get("amount"), "plain", currency)
     return {
@@ -269,7 +272,12 @@ def manual_transaction(payload: dict[str, Any]) -> dict[str, Any]:
         "currency": amount.currency,
         "source_type": "manual",
         "source_filename": "manual-entry",
-        "extracted": {"date": str(payload["date"]), "amount": str(payload.get("amount"))},
+        "evidence_status": "manual_attested",
+        "extracted": {
+            "date": str(payload["date"]),
+            "amount": str(payload.get("amount")),
+            "manual_attestation": attestation_note,
+        },
     }
 
 

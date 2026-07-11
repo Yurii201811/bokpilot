@@ -12,6 +12,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .exports import export_csv, export_json, export_sie_style, export_summary
+from .imports import attach_source_evidence, commit_import, get_import_preview, preview_import
+from .matching import record_match_decision, suggest_matches
 from .parsers import manual_transaction, parse_bank_csv, parse_document_text
 from .resources import resource_file
 from .sample_data import load_sample_transactions
@@ -37,6 +39,23 @@ class BokpilotHandler(BaseHTTPRequestHandler):
                 workspace = self.store.load()
                 workspace["summary"] = export_summary(workspace)
                 self._json(workspace)
+            elif path.startswith("/api/imports/") and len(path.split("/")) == 4:
+                preview = get_import_preview(self.store.repository, path.split("/")[3])
+                payload = preview.to_dict()
+                payload["workspace_revision"] = self.store.repository.workspace_revision()
+                self._json(payload)
+            elif path.startswith("/api/sources/") and path.endswith("/matches"):
+                source_id = path.split("/")[3]
+                self._json(
+                    {
+                        "source_id": source_id,
+                        "matches": [
+                            value.to_dict()
+                            for value in suggest_matches(self.store.repository, source_id)
+                        ],
+                        "workspace_revision": self.store.repository.workspace_revision(),
+                    }
+                )
             elif path == "/api/export/json":
                 self._text(export_json(self.store.load()), "application/json; charset=utf-8")
             elif path == "/api/export/csv":
@@ -66,6 +85,37 @@ class BokpilotHandler(BaseHTTPRequestHandler):
                 workspace = self.store.add_transactions(rows, filename)
                 workspace["summary"] = export_summary(workspace)
                 self._json(workspace, HTTPStatus.CREATED)
+            elif path == "/api/imports/preview":
+                preview = preview_import(self.store.repository, payload)
+                response = preview.to_dict()
+                response["workspace_revision"] = self.store.repository.workspace_revision()
+                self._json(response, HTTPStatus.CREATED)
+            elif path.startswith("/api/imports/") and path.endswith("/commit"):
+                batch_id = path.split("/")[3]
+                result = commit_import(
+                    self.store.repository,
+                    batch_id,
+                    expected_workspace_revision=payload.get("expected_workspace_revision"),
+                )
+                self._json(result.to_dict())
+            elif path.startswith("/api/sources/") and path.endswith("/attachment"):
+                source_id = path.split("/")[3]
+                self._json(
+                    attach_source_evidence(self.store.repository, source_id, payload),
+                    HTTPStatus.CREATED,
+                )
+            elif path.startswith("/api/matches/") and path.endswith("/decision"):
+                match_id = path.split("/")[3]
+                result = record_match_decision(
+                    self.store.repository,
+                    match_id,
+                    source_id=str(payload.get("source_id") or ""),
+                    matched_source_id=str(payload.get("matched_source_id") or ""),
+                    decision=str(payload.get("decision") or ""),
+                    matched_minor=payload.get("matched_minor"),
+                    expected_version=payload.get("expected_version"),
+                )
+                self._json(result.to_dict())
             elif path == "/api/import/document":
                 raw = parse_document_text(
                     str(payload.get("filename") or "document.txt"),
@@ -88,7 +138,8 @@ class BokpilotHandler(BaseHTTPRequestHandler):
             else:
                 self._error("Unknown API route.", HTTPStatus.NOT_FOUND)
         except Exception as exc:  # noqa: BLE001
-            self._error(str(exc))
+            status = HTTPStatus.CONFLICT if "conflict" in str(exc).casefold() else HTTPStatus.BAD_REQUEST
+            self._error(str(exc), status)
 
     def log_message(self, format: str, *args: object) -> None:
         return
