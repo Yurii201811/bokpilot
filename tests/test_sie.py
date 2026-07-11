@@ -56,6 +56,7 @@ class SieTest(unittest.TestCase):
         content = (Path(__file__).parent / "fixtures" / "sie" / "approved-packet.se").read_bytes()
         text = content.decode("cp437")
         self.assertIn("Ångström Bokpilot AB", text)
+        self.assertIn('#PROGRAM "Bokpilot" 0.2.0', text)
         self.assertEqual(text.count("#VER "), text.count("\r\n{\r\n"))
         self.assertEqual(text.count("\r\n{\r\n"), text.count("\r\n}\r\n"))
 

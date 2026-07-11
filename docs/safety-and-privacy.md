@@ -55,7 +55,7 @@ off-device backup policy.
 ## Current limitations
 
 - Text parsing is simple and intended for demos and structured text.
-- The SIE-style export is not a certified SIE implementation.
+- SIE 4I has strict local conformance tests but is not certified until the recorded official-service release gate passes.
 - BAS rules cover only common sample scenarios.
 - The app has no authentication because it is intended for local use.
 - There is no encrypted document store yet.

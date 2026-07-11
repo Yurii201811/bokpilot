@@ -9,11 +9,18 @@ from urllib.error import HTTPError
 from urllib.request import urlopen
 
 from bokpilot.resources import resource_file
+from bokpilot import __version__
 from bokpilot.server import make_server
 from bokpilot.store import WorkspaceStore
 
 
 class PackagingTest(unittest.TestCase):
+    def test_release_version_is_centralized(self):
+        self.assertEqual(__version__, "0.2.0")
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = WorkspaceStore(Path(directory) / "bokpilot.sqlite3").load()
+        self.assertEqual(workspace["metadata"]["version"], __version__)
+
     def test_source_smoke_script_runs_from_outside_checkout(self):
         project = Path(__file__).resolve().parents[1]
 

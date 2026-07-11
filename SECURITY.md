@@ -27,6 +27,10 @@ Bokpilot is a local-first application with no multi-user permission model and no
 
 The built-in server refuses non-loopback binds, validates the exact `Host` header to reduce DNS-rebinding risk, issues an in-memory startup session token, requires that token on mutations, checks any supplied `Origin`, accepts JSON mutation bodies only, and caps their declared size. These controls protect the local HTTP boundary; they are not remote-user authentication and do not make public deployment safe.
 
+`.env.example` is process-variable documentation only. Bokpilot does not load
+`.env` automatically. Do not place credentials in repository files or issue
+attachments.
+
 Review decisions and duplicate decisions are append-only audit records. Stale item versions are rejected. Reset requires explicit confirmation and creates a verified backup before clearing database records.
 
 ## Additional requirements before remote or multi-user use

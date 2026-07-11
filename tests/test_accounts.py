@@ -20,6 +20,8 @@ class AccountCatalogTest(unittest.TestCase):
         self.assertIsNone(catalog.get("1930"))
         self.assertIn("1930", catalog)
         self.assertEqual(catalog.entry("1930").evidence_status, "pending_review")
+        self.assertIn("1930", catalog.pending_codes())
+        self.assertEqual(tuple(sorted(entry.code for entry in catalog.entries())), tuple(entry.code for entry in catalog.entries()))
 
     def test_incomplete_approved_evidence_is_rejected(self):
         payload = (

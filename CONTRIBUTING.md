@@ -15,11 +15,23 @@ Thanks for helping build a safer open-source pre-accounting assistant for Swedis
 ## Local development
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -e .
 python3 -m bokpilot --port 8765
-python3 -m unittest
 ```
 
 The app uses only the Python standard library for the MVP. Keep dependencies out unless they materially improve the project and are easy for contributors to install.
+
+Before every commit, run this exact sequence:
+
+```bash
+python3 -m unittest -v
+python3 -m compileall -q bokpilot tests
+node --check bokpilot/resources/static/app.js
+python3 scripts/smoke_installed.py --build-wheel
+git diff --check
+```
 
 ## Pull request expectations
 

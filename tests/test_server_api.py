@@ -32,6 +32,9 @@ class ServerApiTest(unittest.TestCase):
         self.thread.join(timeout=2)
         self.temp_dir.cleanup()
 
+    def test_session_reports_release_version(self):
+        self.assertEqual(self.session["version"], "0.2.0")
+
     def test_import_bank_csv_route_returns_workspace_summary(self):
         payload = {
             "filename": "bank.csv",

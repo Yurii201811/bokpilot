@@ -28,6 +28,7 @@ from .exports import (
     export_summary,
     read_export_batch,
 )
+from . import __version__
 from .accounts import AccountCatalog
 from .domain import AccountingMethod, CompanyProfile, ReviewDecision, TransactionNature, VatTreatment
 from .imports import attach_source_evidence, commit_import, get_import_preview, preview_import
@@ -81,6 +82,7 @@ class BokpilotHandler(BaseHTTPRequestHandler):
                     {
                         "token": self.session_token,
                         "workspace_revision": self.store.repository.workspace_revision(),
+                        "version": __version__,
                     }
                 )
                 return

@@ -32,7 +32,14 @@ Use this before publishing the repository.
 ## Before wider promotion
 
 - [x] Add screenshots captured from the running app.
-- [ ] Add SIE validator fixtures.
+- [x] Add synthetic SIE validator fixtures and strict local parser coverage.
 - [ ] Ask a Swedish accountant/bookkeeper to review sample mappings and wording.
 - [ ] Add more BAS 2026 account coverage.
-- [ ] Add privacy review for real document attachment handling.
+- [x] Add privacy and integrity controls for local document attachment handling.
+
+## v0.2 release status
+
+**Blocked.** Automated engineering gates are green, but release readiness is
+not complete until both manual gates in `docs/release-checklist.md` have real
+evidence: named/date-qualified accounting review and official SIE test-service
+validation of the final synthetic fixture.

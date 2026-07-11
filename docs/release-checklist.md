@@ -10,17 +10,27 @@
 
 The synthetic local fixture is `tests/fixtures/sie/approved-packet.se`. It is
 test data only and contains no user records. The local structural/CP437 test
-passes. Current pre-release SHA-256:
-`a481b59eccd23e15fd0ed7afeecd419cd6345952791ccf0fce5e5d986c520f42`.
-Regenerate it after setting the final release version; that final checksum
-supersedes this pre-release value.
+passes. The fixture was regenerated with Bokpilot `0.2.0`. Current local
+SHA-256: `7c7e8060f25233048d6e86b53c4cb4e0a672fdd74428fc29fffb426fd7943786`.
+This is the checksum that must accompany the future official service result;
+regenerate and replace it if the fixture changes.
 
 ## Manual external gate
 
-- [ ] Upload the final synthetic SIE 4I fixture to the official SIE test service.
-- [ ] Record the specification edition, validation date, SHA-256, and result.
+- [ ] **Blocked:** all enabled account and rule rows in `docs/accounting-evidence.md` are marked approved by a named qualified reviewer with a real review date.
+- [ ] **Blocked:** upload the final version-`0.2.0` synthetic SIE fixture to the official SIE test service and record specification edition, validation date, SHA-256, and result.
+- [x] Zero known unresolved high-priority security/privacy regressions in the local suite.
+- [x] Legacy v0.1 migration and verified restore are rehearsed by automated fixtures.
+- [ ] Wheel smoke confirmed on Python 3.10 and 3.14 in required CI.
+- [x] Desktop, mobile, and keyboard-oriented review corridor evidence recorded.
+- [x] Default export tests confirm no raw documents or local paths.
+- [x] Tracked package samples and parser/export fixtures are synthetic; no user workspace artifacts are tracked.
 
 This external validation is intentionally open. It must not be marked complete without the real service result.
+
+Overall v0.2 release gate: **BLOCKED on the two manual external gates and the
+required remote CI matrix.** No reviewer identity or SIE service result has
+been inferred or fabricated.
 
 ## Local UI evidence (2026-07-12)
 

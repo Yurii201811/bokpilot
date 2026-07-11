@@ -7,7 +7,7 @@ compatibility layer expose this JSON-shaped snapshot:
 {
   "metadata": {
     "project": "Bokpilot",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "schema_version": 2,
     "locale": "sv-SE",
     "disclaimer": "..."

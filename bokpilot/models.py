@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
+from . import __version__
 from .domain import PostingDraft, ReviewDecision
 
 
@@ -72,7 +73,7 @@ def empty_workspace() -> dict[str, Any]:
     return {
         "metadata": {
             "project": "Bokpilot",
-            "version": "0.1.0",
+            "version": __version__,
             "schema_version": 2,
             "locale": "sv-SE",
             "disclaimer": (

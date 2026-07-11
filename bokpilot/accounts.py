@@ -63,6 +63,14 @@ class AccountCatalog:
             return None
         return entry
 
+    def entries(self) -> tuple[AccountEntry, ...]:
+        """Return immutable evidence rows for readiness inspection."""
+        return tuple(self._entries[code] for code in sorted(self._entries))
+
+    def pending_codes(self) -> tuple[str, ...]:
+        """Return codes that remain disabled pending qualified review."""
+        return tuple(entry.code for entry in self.entries() if entry.evidence_status != "approved")
+
     @classmethod
     def from_json_file(cls, path: str | Path) -> "AccountCatalog":
         payload = json.loads(Path(path).read_text(encoding="utf-8"))

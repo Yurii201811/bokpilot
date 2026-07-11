@@ -15,6 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 from .domain import CompanyProfile
+from . import __version__
 from .repository import Repository
 from .sie import sie4i_bytes
 
@@ -311,7 +312,7 @@ def export_csv(workspace: dict[str, Any]) -> str:
 def export_sie_style(workspace: dict[str, Any]) -> str:
     lines = [
         "#FLAGGA 0",
-        '#PROGRAM "Bokpilot" 0.1.0',
+        f'#PROGRAM "Bokpilot" {__version__}',
         "#FORMAT PC8",
         f"#GEN {date.today().strftime('%Y%m%d')}",
         '#FNAMN "Bokpilot Demo Company"',

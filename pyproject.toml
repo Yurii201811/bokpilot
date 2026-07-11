@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bokpilot"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Local-first pre-accounting assistant for Swedish receipts, VAT, BAS accounts, and human-reviewed exports."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,6 +29,9 @@ bokpilot = "bokpilot.__main__:main"
 [tool.setuptools]
 packages = ["bokpilot"]
 include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "bokpilot.__version__"}
 
 [tool.setuptools.package-data]
 bokpilot = [

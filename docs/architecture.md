@@ -33,7 +33,7 @@ BOKPILOT_DATA_PATH=/tmp/bokpilot.sqlite3 python3 -m bokpilot --port 8765
 - `bokpilot.repository`: schema-v2 SQLite persistence, transactions, revisions, and query paging.
 - `bokpilot.migrations`: explicit, idempotent migration from legacy JSON workspaces.
 - `bokpilot.backups`: integrity-checked backup creation and atomic restore.
-- `bokpilot.exports`: JSON, CSV, and SIE-style draft export.
+- `bokpilot.exports`: immutable privacy-safe JSON/CSV and SIE 4I export batches.
 - `bokpilot.sample_data`: sample workspace loader.
 - `bokpilot.models`: serializable money, suggestion, and journal-line structures.
 
@@ -56,7 +56,8 @@ BOKPILOT_DATA_PATH=/tmp/bokpilot.sqlite3 python3 -m bokpilot --port 8765
 | `/api/items/{id}/review` | POST | Approve, reject, keep open, or override account/VAT. |
 | `/api/export/json` | GET | Export approved human-reviewed items as JSON. |
 | `/api/export/csv` | GET | Export approved human-reviewed summary CSV. |
-| `/api/export/sie` | GET | Export approved human-reviewed SIE-style draft. |
+| `/api/exports` | POST | Create an immutable approved-review JSON, CSV, or SIE 4I batch. |
+| `/api/exports/{id}/download` | GET | Verify and download the stored artifact bytes. |
 
 ## Safety controls
 

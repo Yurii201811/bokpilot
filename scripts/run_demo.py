@@ -104,7 +104,7 @@ def serve_demo(data_path: Path | None, port: int) -> int:
             reviewer="Synthetic test fixture",
             review_date=date(2026, 7, 11),
         )
-        for entry in pending._entries.values()
+        for entry in pending.entries()
     )
     server = make_server("127.0.0.1", port, store, catalog=approved, demo_mode=True)
     print(f"Synthetic Bokpilot demo at http://127.0.0.1:{port}")
