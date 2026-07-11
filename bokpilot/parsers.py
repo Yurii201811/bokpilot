@@ -44,10 +44,13 @@ def parse_money_exact(value: object, locale: str = "auto", currency: str = "SEK"
     }
     if not candidates:
         raise ValueError(f"Could not parse money value: {value!r}")
-    if len(candidates) > 1:
+    major_values = {candidate[0] for candidate in candidates}
+    if len(major_values) > 1:
         raise ValueError("Ambiguous money format; choose the source locale.")
+    if any(fraction_digits > 2 for _, fraction_digits in candidates):
+        raise ValueError("Money supports at most two decimal places.")
 
-    major = candidates.pop()
+    major = major_values.pop()
     if negative_parentheses:
         major = -abs(major)
     return Money.from_major(major, normalized_currency)
@@ -95,7 +98,7 @@ def _strip_exact_currency(text: str, currency: str) -> str:
     return match.group("number").strip()
 
 
-def _exact_money_candidate(text: str, locale: str) -> Decimal | None:
+def _exact_money_candidate(text: str, locale: str) -> tuple[Decimal, int] | None:
     patterns = {
         "sv-SE": (
             r"(?P<sign>[+-]?)(?P<integer>(?:\d{1,3}(?:[ \u00a0]\d{3})+|\d{1,3}(?:\.\d{3})+|\d+))"
@@ -123,7 +126,7 @@ def _exact_money_candidate(text: str, locale: str) -> Decimal | None:
     normalized = f"{match.group('sign')}{integer}"
     if fraction is not None:
         normalized = f"{normalized}.{fraction}"
-    return Decimal(normalized)
+    return Decimal(normalized), len(fraction or "")
 
 
 def parse_money(value: Any) -> Decimal:

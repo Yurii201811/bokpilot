@@ -28,6 +28,13 @@ class ParserTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at most two decimal places"):
             parse_money_exact("12.3456", "en-US")
 
+    def test_parse_money_exact_rejects_trailing_zero_sub_minor_precision(self):
+        for value, locale in (("12.340", "en-US"), ("12,340", "sv-SE"), ("12.340", "plain")):
+            with self.subTest(value=value, locale=locale), self.assertRaisesRegex(
+                ValueError, "at most two decimal places"
+            ):
+                parse_money_exact(value, locale)
+
     def test_parse_date_exact_supports_documented_layouts(self):
         for value in ("2026-05-02", "2026/05/02", "20260502", "02/05/2026", "02.05.2026", "02-05-2026"):
             with self.subTest(value=value):
