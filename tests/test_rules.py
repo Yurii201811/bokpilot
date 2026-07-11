@@ -39,6 +39,14 @@ class ClassificationRulesTest(unittest.TestCase):
         self.assertTrue(all(rule.evidence_status == "pending_review" for rule in SAFE_SUGGESTION_RULES))
         self.assertTrue(all(rule.suggested_account for rule in SAFE_SUGGESTION_RULES))
 
+    def test_pending_known_heuristic_is_fully_unclassified(self):
+        suggestion = suggest(source_record("Fortnox subscription", -24_900))
+
+        self.assertEqual(suggestion.category, "Unclassified expense")
+        self.assertEqual(suggestion.nature, TransactionNature.UNKNOWN)
+        self.assertEqual(suggestion.vat, VatTreatment.UNKNOWN)
+        self.assertIsNone(suggestion.rule_id)
+
     def test_schema_v2_source_creates_balanced_integer_minor_postings(self):
         suggestion = classify_transaction(
             {

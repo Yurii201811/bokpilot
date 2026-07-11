@@ -50,6 +50,34 @@ class PostingDraftTest(unittest.TestCase):
         self.assertIn("invalid_account", draft.issues)
         self.assertEqual(draft.lines, ())
 
+    def test_reviewer_cannot_select_reserved_control_accounts(self):
+        cases = (
+            (source_record("Bank row", 10_000), "1510"),
+            (
+                source_record("Customer invoice", 10_000, kind=SourceKind.CUSTOMER_INVOICE),
+                "1930",
+            ),
+            (
+                source_record("Supplier invoice", -10_000, kind=SourceKind.SUPPLIER_INVOICE),
+                "2440",
+            ),
+        )
+        for record, account in cases:
+            nature = (
+                TransactionNature.EXPENSE
+                if record.amount.minor < 0
+                else TransactionNature.REVENUE
+            )
+            with self.subTest(kind=record.kind, account=account):
+                draft = build_posting(
+                    record,
+                    decision(nature, account, VatTreatment.RATE_0),
+                    company_profile(AccountingMethod.ACCRUAL),
+                    self.catalog,
+                )
+                self.assertIn("reserved_control_account", draft.issues)
+                self.assertEqual(draft.lines, ())
+
     def test_bank_expense_and_revenue_use_1930_and_balance_exactly(self):
         expense = build_posting(
             source_record("Software payment", -12_500),
@@ -109,6 +137,39 @@ class PostingDraftTest(unittest.TestCase):
         self.assertEqual(invoice.lines, ())
         self.assert_balanced(payment)
         self.assertEqual(payment.lines[0].debit_minor, 5_000)
+
+    def test_accrual_matched_partial_payments_settle_control_accounts(self):
+        customer_payment = build_posting(
+            source_record("Partial customer payment", 5_000, matched_source_id="customer-invoice-1"),
+            decision(TransactionNature.REVENUE, "3011", VatTreatment.RATE_0),
+            company_profile(AccountingMethod.ACCRUAL),
+            self.catalog,
+        )
+        supplier_payment = build_posting(
+            source_record("Partial supplier payment", -4_000, matched_source_id="supplier-invoice-1"),
+            decision(TransactionNature.EXPENSE, "5420", VatTreatment.RATE_0),
+            company_profile(AccountingMethod.ACCRUAL),
+            self.catalog,
+        )
+        unmatched = build_posting(
+            source_record("Unmatched accrual payment", 5_000),
+            decision(TransactionNature.REVENUE, "3011", VatTreatment.RATE_0),
+            company_profile(AccountingMethod.ACCRUAL),
+            self.catalog,
+        )
+
+        self.assert_balanced(customer_payment)
+        self.assert_balanced(supplier_payment)
+        self.assertEqual(
+            [(line.account, line.debit_minor, line.credit_minor) for line in customer_payment.lines],
+            [("1930", 5_000, 0), ("1510", 0, 5_000)],
+        )
+        self.assertEqual(
+            [(line.account, line.debit_minor, line.credit_minor) for line in supplier_payment.lines],
+            [("2440", 4_000, 0), ("1930", 0, 4_000)],
+        )
+        self.assertIn("accrual_bank_payment_requires_match", unmatched.issues)
+        self.assertEqual(unmatched.lines, ())
 
     def test_rate_zero_override_does_not_reuse_source_vat(self):
         record = source_record(

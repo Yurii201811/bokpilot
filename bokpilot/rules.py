@@ -272,8 +272,11 @@ def suggest(record: SourceRecord) -> SafeSuggestion:
         (
             rule
             for rule in SAFE_SUGGESTION_RULES
-            if any(normalize_text(keyword) in tokens for keyword in rule.keywords)
-            or any(_bounded_phrase(normalized, phrase) for phrase in rule.phrases)
+            if rule.evidence_status == "approved"
+            and (
+                any(normalize_text(keyword) in tokens for keyword in rule.keywords)
+                or any(_bounded_phrase(normalized, phrase) for phrase in rule.phrases)
+            )
         ),
         None,
     )
@@ -292,17 +295,16 @@ def suggest(record: SourceRecord) -> SafeSuggestion:
             rule_version=None,
         )
 
-    reviewed = matched.evidence_status == "approved"
     return SafeSuggestion(
-        nature=matched.suggested_nature if reviewed else TransactionNature.UNKNOWN,
+        nature=matched.suggested_nature,
         category=matched.category,
-        account=matched.suggested_account if reviewed else None,
+        account=matched.suggested_account,
         account_name=None,
-        vat=matched.suggested_vat if reviewed else VatTreatment.UNKNOWN,
+        vat=matched.suggested_vat,
         vat_minor=None,
-        confidence=matched.confidence if reviewed else 0.0,
+        confidence=matched.confidence,
         explanation=matched.explanation,
-        risk_flags=() if reviewed else ("rule_pending_review",),
+        risk_flags=(),
         rule_id=matched.rule_id,
         rule_version=matched.version,
     )

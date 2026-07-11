@@ -24,6 +24,7 @@ _HIGH_RISK_NATURES = {
     TransactionNature.REFUND,
     TransactionNature.LOAN,
 }
+_RESERVED_CONTROL_ACCOUNTS = {"1510", "1930", "2440", "2611", "2641"}
 _VAT_RATES = {
     VatTreatment.RATE_6: Decimal("6"),
     VatTreatment.RATE_12: Decimal("12"),
@@ -57,6 +58,8 @@ def build_posting(
         issues.append("vat_treatment_mismatch")
     if account is None:
         issues.append("invalid_account")
+    if decision.account in _RESERVED_CONTROL_ACCOUNTS:
+        issues.append("reserved_control_account")
 
     high_risk = record.high_risk or decision.nature in _HIGH_RISK_NATURES
     if high_risk and not decision.risk_acknowledged:
@@ -74,13 +77,28 @@ def build_posting(
         issues.append("nature_source_mismatch")
     if record.kind in {SourceKind.RECEIPT, SourceKind.MANUAL}:
         issues.append("source_kind_requires_payment")
+    accrual_bank_payment = (
+        record.kind is SourceKind.BANK_TRANSACTION
+        and profile.accounting_method is AccountingMethod.ACCRUAL
+        and decision.nature in {TransactionNature.EXPENSE, TransactionNature.REVENUE}
+    )
+    if accrual_bank_payment and not record.matched_source_id:
+        issues.append("accrual_bank_payment_requires_match")
+    if accrual_bank_payment and record.matched_source_id:
+        if (
+            (decision.nature is TransactionNature.REVENUE and record.amount.minor <= 0)
+            or (decision.nature is TransactionNature.EXPENSE and record.amount.minor >= 0)
+        ):
+            issues.append("matched_payment_direction_mismatch")
+        if decision.vat not in {VatTreatment.EXEMPT, VatTreatment.RATE_0} or vat_minor != 0:
+            issues.append("matched_payment_vat_must_be_zero")
     if (
         record.kind in {SourceKind.CUSTOMER_INVOICE, SourceKind.SUPPLIER_INVOICE}
         and profile.accounting_method is AccountingMethod.CASH
     ):
         issues.append("cash_method_invoice_requires_payment")
 
-    required_codes = _required_control_accounts(record, decision, vat_minor)
+    required_codes = _required_control_accounts(record, decision, profile, vat_minor)
     control_accounts: dict[str, AccountEntry] = {}
     for code in required_codes:
         enabled = catalog.get(code)
@@ -91,7 +109,15 @@ def build_posting(
 
     lines: tuple[JournalLine, ...] = ()
     if not issues and account is not None:
-        lines = _posting_lines(record, decision, account, control_accounts, gross_minor, vat_minor)
+        lines = _posting_lines(
+            record,
+            decision,
+            profile,
+            account,
+            control_accounts,
+            gross_minor,
+            vat_minor,
+        )
 
     draft = PostingDraft(
         source_id=record.id,
@@ -145,11 +171,17 @@ def _reviewed_vat_minor(
 def _required_control_accounts(
     record: SourceRecord,
     decision: ReviewDecision,
+    profile: CompanyProfile,
     vat_minor: int,
 ) -> tuple[str, ...]:
     codes: list[str] = []
     if record.kind is SourceKind.BANK_TRANSACTION:
         codes.append("1930")
+        if profile.accounting_method is AccountingMethod.ACCRUAL and record.matched_source_id:
+            if decision.nature is TransactionNature.REVENUE:
+                codes.append("1510")
+            elif decision.nature is TransactionNature.EXPENSE:
+                codes.append("2440")
     elif record.kind is SourceKind.CUSTOMER_INVOICE:
         codes.append("1510")
     elif record.kind is SourceKind.SUPPLIER_INVOICE:
@@ -162,12 +194,23 @@ def _required_control_accounts(
 def _posting_lines(
     record: SourceRecord,
     decision: ReviewDecision,
+    profile: CompanyProfile,
     account: AccountEntry,
     controls: dict[str, AccountEntry],
     gross_minor: int,
     vat_minor: int,
 ) -> tuple[JournalLine, ...]:
     net_minor = gross_minor - vat_minor
+    if (
+        record.kind is SourceKind.BANK_TRANSACTION
+        and profile.accounting_method is AccountingMethod.ACCRUAL
+        and record.matched_source_id
+    ):
+        bank = controls["1930"]
+        if decision.nature is TransactionNature.REVENUE:
+            return (_debit(bank, gross_minor), _credit(controls["1510"], gross_minor))
+        if decision.nature is TransactionNature.EXPENSE:
+            return (_debit(controls["2440"], gross_minor), _credit(bank, gross_minor))
     if record.kind is SourceKind.CUSTOMER_INVOICE:
         lines = [
             _debit(controls["1510"], gross_minor),
