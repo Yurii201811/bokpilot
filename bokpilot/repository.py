@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -146,6 +147,23 @@ class Repository:
         with self.transaction() as transaction:
             return transaction.save_posting_draft(draft)
 
+    def record_attachment(
+        self,
+        source_id: str,
+        *,
+        path: Path,
+        sha256: str,
+        byte_count: int,
+    ) -> MutationResult:
+        _verify_registered_file(Path(path), sha256, byte_count)
+        with self.transaction() as transaction:
+            return transaction.record_attachment(
+                source_id,
+                path=Path(path),
+                sha256=sha256,
+                byte_count=byte_count,
+            )
+
     def create_export_batch(
         self,
         *,
@@ -155,6 +173,7 @@ class Repository:
         byte_count: int,
         source_ids: Sequence[str],
     ) -> MutationResult:
+        _verify_registered_file(Path(artifact_path), sha256, byte_count)
         with self.transaction() as transaction:
             return transaction.create_export_batch(
                 format=format,
@@ -163,6 +182,35 @@ class Repository:
                 byte_count=byte_count,
                 source_ids=source_ids,
             )
+
+    def backup_to(
+        self,
+        destination: Path,
+        attachment_root: Path,
+        export_root: Path,
+    ) -> Any:
+        from .backups import backup_repository
+
+        return backup_repository(self, Path(destination), Path(attachment_root), Path(export_root))
+
+    def snapshot_to(self, destination: Path) -> None:
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(destination.parent, 0o700)
+        if destination.exists():
+            raise FileExistsError(f"Snapshot destination already exists: {destination}")
+        descriptor = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        os.close(descriptor)
+        source = self._connect()
+        target = sqlite3.connect(destination)
+        try:
+            source.backup(target)
+            target.commit()
+        finally:
+            target.close()
+            source.close()
+            os.chmod(destination, 0o600)
+            self._harden_files()
 
     def workspace_revision(self) -> int:
         with self._read_connection() as connection:
@@ -314,6 +362,22 @@ class Repository:
             raise ValueError("Stored migration events are invalid.")
         return tuple(dict(event) for event in events)
 
+    def attachment_records(self) -> tuple[dict[str, Any], ...]:
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                "SELECT id, source_id, path, sha256, byte_count "
+                "FROM source_attachments ORDER BY id"
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def export_records(self) -> tuple[dict[str, Any], ...]:
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                "SELECT id, format, artifact_path, sha256, byte_count, source_ids_json "
+                "FROM export_batches ORDER BY id"
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
     def explain_query_plan(self, sql: str, parameters: Sequence[Any] = ()) -> tuple[str, ...]:
         with self._read_connection() as connection:
             rows = connection.execute(f"EXPLAIN QUERY PLAN {sql}", tuple(parameters)).fetchall()
@@ -406,6 +470,31 @@ class RepositoryTransaction:
         )
         self.dirty = True
         return MutationResult(self.projected_revision, 1, 0, (draft.source_id,))
+
+    def record_attachment(
+        self,
+        source_id: str,
+        *,
+        path: Path,
+        sha256: str,
+        byte_count: int,
+    ) -> MutationResult:
+        self._require_source(source_id)
+        existing = self._connection.execute(
+            "SELECT id FROM source_attachments WHERE source_id = ? AND sha256 = ?",
+            (source_id, sha256),
+        ).fetchone()
+        if existing is not None:
+            return MutationResult(self.projected_revision, 0, 1, ())
+        identifier = f"attachment-{uuid4().hex}"
+        self._connection.execute(
+            "INSERT INTO source_attachments "
+            "(id, source_id, sha256, path, byte_count, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (identifier, source_id, sha256, str(path), byte_count, _now()),
+        )
+        self.dirty = True
+        return MutationResult(self.projected_revision, 1, 0, (identifier,))
 
     def create_export_batch(
         self,
@@ -547,6 +636,26 @@ def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _verify_registered_file(path: Path, expected_sha256: str, expected_size: int) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"Registered artifact must be a regular file: {path}")
+    if type(expected_size) is not int or expected_size < 0:
+        raise ValueError("Registered artifact byte count must be a non-negative integer.")
+    data = path.read_bytes()
+    if len(data) != expected_size:
+        raise ValueError("Registered artifact byte count does not match the file.")
+    if hashlib.sha256(data).hexdigest() != str(expected_sha256).lower():
+        raise ValueError("Registered artifact hash does not match the file.")
+    os.chmod(path.parent, 0o700)
+    os.chmod(path, 0o600)
+
+
+def restore_from(backup: Path, destination_root: Path, expected_sha256: str) -> Any:
+    from .backups import restore_backup
+
+    return restore_backup(Path(backup), Path(destination_root), str(expected_sha256))
+
+
 _INSERT_SOURCE_SQL = """
 INSERT INTO sources (
     id, kind, occurred_on, amount_minor, currency, description, counterparty,
@@ -617,7 +726,7 @@ CREATE TABLE IF NOT EXISTS sources (
 );
 
 CREATE TABLE IF NOT EXISTS source_attachments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT PRIMARY KEY,
     source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
     sha256 TEXT NOT NULL,
     path TEXT NOT NULL,

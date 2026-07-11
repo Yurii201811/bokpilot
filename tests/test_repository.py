@@ -171,11 +171,14 @@ class RepositoryTest(unittest.TestCase):
         self.assertEqual(self.repository.latest_posting_draft(record.id), draft)
 
     def test_export_batch_is_a_single_revisioned_mutation(self):
+        artifact = self.root / "exports" / "batch.json"
+        artifact.parent.mkdir(mode=0o700)
+        artifact.write_bytes(b"{}\n")
         result = self.repository.create_export_batch(
             format="json",
-            artifact_path=self.root / "exports" / "batch.json",
-            sha256="a" * 64,
-            byte_count=123,
+            artifact_path=artifact,
+            sha256="ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+            byte_count=3,
             source_ids=(),
         )
 
