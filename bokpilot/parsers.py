@@ -13,6 +13,9 @@ from typing import Any
 
 def parse_money(value: Any) -> Decimal:
     text = str(value or "").strip()
+    negative_parentheses = text.startswith("(") and text.endswith(")")
+    if negative_parentheses:
+        text = text[1:-1].strip()
     text = text.replace("SEK", "").replace("kr", "").replace("\u00a0", " ")
     text = text.replace(" ", "")
     if "," in text and "." in text:
@@ -20,6 +23,8 @@ def parse_money(value: Any) -> Decimal:
     elif "," in text:
         text = text.replace(",", ".")
     text = re.sub(r"[^0-9.\-]", "", text)
+    if negative_parentheses and text and not text.startswith("-"):
+        text = f"-{text}"
     if text in ("", "-", ".", "-."):
         return Decimal("0.00")
     try:
@@ -28,33 +33,64 @@ def parse_money(value: Any) -> Decimal:
         raise ValueError(f"Could not parse money value: {value!r}") from exc
 
 
-def parse_bank_csv(content: str) -> list[dict[str, Any]]:
+def parse_bank_csv(content: str, filename: str = "bank-transactions.csv") -> list[dict[str, Any]]:
     sample = content[:2048]
-    dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+    dialect = _sniff_csv_dialect(sample)
     reader = csv.DictReader(io.StringIO(content), dialect=dialect)
     if not reader.fieldnames:
         raise ValueError("CSV file has no header row.")
 
     rows: list[dict[str, Any]] = []
     for line_number, row in enumerate(reader, start=2):
+        if _is_blank_csv_row(row):
+            continue
         normalized = {_normalize_header(key): value for key, value in row.items()}
-        date_value = _first(normalized, ("date", "datum", "bookingdate", "bokforingsdag"))
-        amount_value = _first(normalized, ("amount", "belopp", "value", "summa"))
+        date_value = _first(
+            normalized,
+            (
+                "date",
+                "datum",
+                "bookingdate",
+                "booking_date",
+                "posted_date",
+                "transactiondate",
+                "transaction_date",
+                "transaktionsdag",
+                "transaktionsdatum",
+                "bokforingsdag",
+                "bokforingsdatum",
+            ),
+        )
+        amount = _bank_amount(normalized)
         description = _first(
             normalized,
-            ("description", "beskrivning", "text", "message", "notering", "mottagare", "payee"),
+            (
+                "description",
+                "beskrivning",
+                "text",
+                "message",
+                "meddelande",
+                "notering",
+                "reference",
+                "referens",
+                "transaction_text",
+                "transaktionstext",
+                "mottagare",
+                "payee",
+            ),
         )
-        if not date_value or amount_value in (None, ""):
+        if not date_value or amount is None:
             raise ValueError(f"Missing required date or amount in CSV row {line_number}.")
         rows.append(
             {
                 "date": _parse_date(date_value),
                 "description": description or "Bank transaction",
                 "counterparty": _first(normalized, ("counterparty", "motpart", "namn", "payee")) or "",
-                "amount": float(parse_money(amount_value)),
+                "amount": float(amount),
                 "currency": _first(normalized, ("currency", "valuta")) or "SEK",
                 "source_type": "bank_csv",
-                "source_filename": "bank-transactions.csv",
+                "source_filename": filename,
+                "source_row": line_number,
             }
         )
     return rows
@@ -107,7 +143,23 @@ def manual_transaction(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_header(header: str | None) -> str:
-    return re.sub(r"[^a-z0-9_]", "", (header or "").strip().lower().replace(" ", "_"))
+    text = (header or "").strip().lower().replace(" ", "_")
+    text = text.translate(str.maketrans({"å": "a", "ä": "a", "ö": "o", "é": "e"}))
+    return re.sub(r"[^a-z0-9_]", "", text)
+
+
+def _sniff_csv_dialect(sample: str) -> csv.Dialect:
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=",;\t")
+    except csv.Error:
+        class FallbackDialect(csv.excel):
+            delimiter = ";" if sample.count(";") >= sample.count(",") else ","
+
+        return FallbackDialect
+
+
+def _is_blank_csv_row(row: dict[str | None, Any]) -> bool:
+    return all(str(value or "").strip() == "" for value in row.values())
 
 
 def _first(mapping: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -118,6 +170,29 @@ def _first(mapping: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return None
 
 
+def _bank_amount(mapping: dict[str, Any]) -> Decimal | None:
+    amount_value = _first(
+        mapping,
+        ("amount", "amount_sek", "belopp", "belopp_sek", "value", "summa", "transaction_amount"),
+    )
+    if amount_value not in (None, ""):
+        return parse_money(amount_value)
+
+    debit_value = _first(
+        mapping,
+        ("debit", "debet", "withdrawal", "withdrawals", "uttag", "ut", "paid_out", "money_out", "utbetalt"),
+    )
+    credit_value = _first(
+        mapping,
+        ("credit", "kredit", "deposit", "deposits", "insattning", "insättning", "in", "paid_in", "money_in", "inbetalt"),
+    )
+    debit = parse_money(debit_value) if debit_value not in (None, "") else Decimal("0.00")
+    credit = parse_money(credit_value) if credit_value not in (None, "") else Decimal("0.00")
+    if debit == 0 and credit == 0:
+        return None
+    return abs(credit) - abs(debit)
+
+
 def _parse_date(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -125,8 +200,10 @@ def _parse_date(value: Any) -> str:
     for pattern, repl in (
         (r"^(\d{4})-(\d{2})-(\d{2})$", r"\1-\2-\3"),
         (r"^(\d{4})/(\d{2})/(\d{2})$", r"\1-\2-\3"),
+        (r"^(\d{4})(\d{2})(\d{2})$", r"\1-\2-\3"),
         (r"^(\d{2})/(\d{2})/(\d{4})$", r"\3-\2-\1"),
         (r"^(\d{2})\.(\d{2})\.(\d{4})$", r"\3-\2-\1"),
+        (r"^(\d{2})-(\d{2})-(\d{4})$", r"\3-\2-\1"),
     ):
         match = re.match(pattern, text)
         if match:

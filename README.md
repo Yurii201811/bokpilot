@@ -17,7 +17,8 @@ The first version is deliberately local-first and dependency-light. It does not 
 - Import sample receipts, supplier invoices, customer invoices, and bank CSV transactions.
 - Add manual transactions from the UI.
 - Parse basic text documents with fields such as `Supplier`, `Date`, `Total`, `VAT`, and `Description`.
-- Parse CSV files with common Swedish or English headers for date, description, amount, and currency.
+- Parse CSV files with common Swedish or English headers for date, description, signed amount, currency, or split debit/credit and in/out amount columns.
+- Preserve bank CSV source filename and row number on imported items for reviewer traceability.
 - Suggest BAS account mappings and VAT treatment using deterministic rules.
 - Explain each suggestion in plain language.
 - Show confidence, risk flags, and draft double-entry journal lines.

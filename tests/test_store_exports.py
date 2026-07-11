@@ -1,3 +1,5 @@
+import csv
+import io
 import json
 import tempfile
 import unittest
@@ -14,7 +16,14 @@ class StoreExportTest(unittest.TestCase):
             store = WorkspaceStore(Path(tmp) / "workspace.json")
             workspace = store.add_transactions(
                 [
-                    {"date": "2026-05-02", "description": "Fortnox subscription", "amount": -249},
+                    {
+                        "date": "2026-05-02",
+                        "description": "Fortnox subscription",
+                        "amount": -249,
+                        "source_type": "bank_csv",
+                        "source_filename": "bank.csv",
+                        "source_row": 2,
+                    },
                     {"date": "2026-05-06", "description": "Bankavgift", "amount": -59},
                 ],
                 "test",
@@ -27,7 +36,12 @@ class StoreExportTest(unittest.TestCase):
             self.assertEqual(export_summary(workspace)["export_ready"], 1)
             json_packet = json.loads(export_json(workspace))
             self.assertEqual(json_packet["items"][0]["id"], first_id)
-            self.assertNotIn("BP-0002", export_csv(workspace))
+            csv_packet = export_csv(workspace)
+            csv_rows = list(csv.DictReader(io.StringIO(csv_packet)))
+            self.assertEqual(csv_rows[0]["source_type"], "bank_csv")
+            self.assertEqual(csv_rows[0]["source_filename"], "bank.csv")
+            self.assertEqual(csv_rows[0]["source_row"], "2")
+            self.assertNotIn("BP-0002", csv_packet)
             self.assertIn("#VER", export_sie_style(workspace))
 
     def test_approving_unchanged_item_does_not_create_override(self):

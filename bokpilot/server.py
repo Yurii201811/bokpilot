@@ -53,8 +53,9 @@ class BokpilotHandler(BaseHTTPRequestHandler):
                 workspace["summary"] = export_summary(workspace)
                 self._json(workspace)
             elif path == "/api/import/bank-csv":
-                rows = parse_bank_csv(str(payload.get("content", "")))
-                workspace = self.store.add_transactions(rows, payload.get("filename") or "bank-csv")
+                filename = str(payload.get("filename") or "bank-csv")
+                rows = parse_bank_csv(str(payload.get("content", "")), filename)
+                workspace = self.store.add_transactions(rows, filename)
                 workspace["summary"] = export_summary(workspace)
                 self._json(workspace, HTTPStatus.CREATED)
             elif path == "/api/import/document":

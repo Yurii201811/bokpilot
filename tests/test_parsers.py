@@ -7,16 +7,73 @@ class ParserTest(unittest.TestCase):
     def test_parse_swedish_money_formats(self):
         self.assertEqual(str(parse_money("1 248,75 SEK")), "1248.75")
         self.assertEqual(str(parse_money("-59.00")), "-59.00")
+        self.assertEqual(str(parse_money("(1 248,75 SEK)")), "-1248.75")
 
     def test_parse_bank_csv_semicolon_headers(self):
         rows = parse_bank_csv(
             "Datum;Beskrivning;Belopp;Valuta\n"
+            "2026-05-02;Fortnox subscription;-249,00;SEK\n"
+            "\n"
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["date"], "2026-05-02")
+        self.assertEqual(rows[0]["description"], "Fortnox subscription")
+        self.assertEqual(rows[0]["amount"], -249.00)
+
+    def test_parse_bank_csv_preserves_source_filename_and_row(self):
+        rows = parse_bank_csv(
+            "Datum;Beskrivning;Belopp\n"
+            "2026-05-02;Fortnox subscription;-249,00\n"
+            "2026-05-05;Customer invoice paid;12500,00\n",
+            "seb-export-june.csv",
+        )
+
+        self.assertEqual(rows[0]["source_filename"], "seb-export-june.csv")
+        self.assertEqual(rows[0]["source_row"], 2)
+        self.assertEqual(rows[1]["source_row"], 3)
+
+    def test_parse_bank_csv_swedish_diacritic_headers(self):
+        rows = parse_bank_csv(
+            "Bokföringsdag;Text;Belopp;Valuta\n"
             "2026-05-02;Fortnox subscription;-249,00;SEK\n"
         )
 
         self.assertEqual(rows[0]["date"], "2026-05-02")
         self.assertEqual(rows[0]["description"], "Fortnox subscription")
         self.assertEqual(rows[0]["amount"], -249.00)
+
+    def test_parse_bank_csv_common_swedish_bank_aliases(self):
+        rows = parse_bank_csv(
+            "Bokföringsdatum;Meddelande;Belopp SEK;Valuta\n"
+            "20260502;Bankavgift företagskonto;(59,00 SEK);SEK\n",
+            "bank-export.csv",
+        )
+
+        self.assertEqual(rows[0]["date"], "2026-05-02")
+        self.assertEqual(rows[0]["description"], "Bankavgift företagskonto")
+        self.assertEqual(rows[0]["amount"], -59.00)
+        self.assertEqual(rows[0]["source_filename"], "bank-export.csv")
+
+    def test_parse_bank_csv_debit_credit_columns(self):
+        rows = parse_bank_csv(
+            "Bokföringsdag;Text;Debet;Kredit;Valuta\n"
+            "2026-05-02;Fortnox subscription;249,00;;SEK\n"
+            "2026-05-05;Customer invoice paid;;12500,00;SEK\n"
+        )
+
+        self.assertEqual(rows[0]["amount"], -249.00)
+        self.assertEqual(rows[1]["amount"], 12500.00)
+
+    def test_parse_bank_csv_in_out_columns(self):
+        rows = parse_bank_csv(
+            "Datum;Beskrivning;Ut;In\n"
+            "2026-05-02;Fortnox subscription;249,00;\n"
+            "2026-05-05;Customer invoice paid;;12500,00\n"
+        )
+
+        self.assertEqual(rows[0]["amount"], -249.00)
+        self.assertEqual(rows[1]["amount"], 12500.00)
 
     def test_parse_receipt_text(self):
         raw = parse_document_text(

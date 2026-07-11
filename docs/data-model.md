@@ -30,7 +30,8 @@ Each imported receipt, invoice, bank row, or manual transaction becomes one item
     "amount": -249.0,
     "currency": "SEK",
     "source_type": "bank_csv",
-    "source_filename": "bank-transactions.csv"
+    "source_filename": "seb-export-june.csv",
+    "source_row": 2
   },
   "suggestion": {},
   "status": "needs_review",
