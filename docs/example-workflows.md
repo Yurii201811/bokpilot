@@ -1,5 +1,13 @@
 # Example workflows
 
+## Create a review packet download
+
+After approving items, choose JSON, CSV, or SIE 4I. Bokpilot creates one
+immutable local artifact, displays its SHA-256, and downloads those exact
+verified bytes. JSON and CSV are privacy-safe review packets; SIE 4I uses the
+configured company profile and must still pass the release validation gate
+before production use.
+
 ## Freelancer monthly packet
 
 1. Export bank transactions from the business bank account as CSV.

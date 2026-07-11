@@ -83,7 +83,7 @@ class ServerApiTest(unittest.TestCase):
 
         first = workspace["items"][0]
         second = workspace["items"][1]
-        self._json_request(
+        approved = self._json_request(
             f"/api/sources/{first_id}/review",
             {
                 "status": "approved",
@@ -114,6 +114,23 @@ class ServerApiTest(unittest.TestCase):
 
         self.assertIn(first_id, export_packet)
         self.assertNotIn(second_id, export_packet)
+
+        current = self._json_request("/api/workspace")
+        batch = self._json_request(
+            "/api/exports",
+            {
+                "format": "json",
+                "review_ids": [approved["decision_id"]],
+                "expected_workspace_revision": current["revision"],
+            },
+            method="POST",
+            expected_status=201,
+        )
+        with urlopen(f"{self.base_url}/api/exports/{batch['id']}/download", timeout=5) as response:
+            downloaded = response.read()
+            self.assertIn("attachment; filename=", response.headers["Content-Disposition"])
+            self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(__import__("hashlib").sha256(downloaded).hexdigest(), batch["sha256"])
 
     def test_import_bank_csv_route_propagates_explicit_locale(self):
         workspace = self._json_request(

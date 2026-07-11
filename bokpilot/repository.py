@@ -230,9 +230,12 @@ class Repository:
         sha256: str,
         byte_count: int,
         source_ids: Sequence[str],
+        expected_revision: int | None = None,
     ) -> MutationResult:
         _verify_registered_file(Path(artifact_path), sha256, byte_count)
         with self.transaction() as transaction:
+            if expected_revision is not None:
+                transaction.require_revision(expected_revision)
             return transaction.create_export_batch(
                 format=format,
                 artifact_path=artifact_path,
@@ -536,6 +539,67 @@ class Repository:
                 "FROM export_batches ORDER BY id"
             ).fetchall()
         return tuple(dict(row) for row in rows)
+
+    def export_record(self, batch_id: str) -> dict[str, Any] | None:
+        with self._read_connection() as connection:
+            row = connection.execute(
+                "SELECT id, format, artifact_path, sha256, byte_count, source_ids_json, created_at "
+                "FROM export_batches WHERE id = ?",
+                (batch_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def approved_review_payloads(self, review_ids: Sequence[str]) -> tuple[dict[str, Any], ...]:
+        if not review_ids:
+            raise ValueError("At least one review ID is required for export.")
+        placeholders = ",".join("?" for _ in review_ids)
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                "SELECT r.decision_id, r.source_id, r.action, r.snapshot_json, r.posting_json, "
+                "r.created_at AS reviewed_at, s.occurred_on, s.amount_minor, s.currency, "
+                "s.description, s.counterparty, s.kind, s.source_filename, s.source_row, "
+                "s.attachment_sha256, s.status "
+                "FROM reviews r JOIN sources s ON s.id = r.source_id "
+                f"WHERE r.decision_id IN ({placeholders})",
+                tuple(review_ids),
+            ).fetchall()
+            latest = {
+                str(row["source_id"]): str(row["decision_id"] or "")
+                for row in connection.execute(
+                    "SELECT r.source_id, r.decision_id FROM reviews r "
+                    "JOIN (SELECT source_id, MAX(id) AS max_id FROM reviews GROUP BY source_id) x "
+                    "ON x.max_id = r.id"
+                ).fetchall()
+            }
+        by_id = {str(row["decision_id"]): row for row in rows}
+        if set(by_id) != set(review_ids):
+            raise ValueError("One or more review IDs do not exist.")
+        payloads: list[dict[str, Any]] = []
+        for review_id in review_ids:
+            row = by_id[review_id]
+            source_id = str(row["source_id"])
+            if row["action"] != "approved" or row["status"] != "approved" or latest.get(source_id) != review_id:
+                raise ValueError(f"Review is not the current approved decision: {review_id}")
+            posting = dict(json.loads(str(row["posting_json"])))
+            payloads.append(
+                {
+                    "review_id": review_id,
+                    "source_id": source_id,
+                    "reviewed_at": str(row["reviewed_at"]),
+                    "decision": dict(json.loads(str(row["snapshot_json"]))),
+                    "date": str(row["occurred_on"]),
+                    "amount_minor": int(row["amount_minor"]),
+                    "currency": str(row["currency"]),
+                    "description": str(row["description"]),
+                    "counterparty": str(row["counterparty"]),
+                    "kind": str(row["kind"]),
+                    "source_filename": str(row["source_filename"]),
+                    "source_row": int(row["source_row"]) if row["source_row"] is not None else None,
+                    "source_sha256": str(row["attachment_sha256"]) if row["attachment_sha256"] else None,
+                    "posting_lines": list(posting.get("lines", [])),
+                }
+            )
+        return tuple(payloads)
 
     def compatibility_items(self) -> tuple[dict[str, Any], ...]:
         with self._read_connection() as connection:
@@ -1323,6 +1387,8 @@ def _compatibility_items_from_connection(
         "SELECT s.*, "
         "(SELECT snapshot_json FROM suggestions sg WHERE sg.source_id = s.id "
         " ORDER BY sg.id DESC LIMIT 1) AS suggestion_json "
+        ", (SELECT decision_id FROM reviews rv WHERE rv.source_id = s.id "
+        " ORDER BY rv.id DESC LIMIT 1) AS review_id "
         "FROM sources s ORDER BY s.created_at, s.id"
     ).fetchall()
     items: list[dict[str, Any]] = []
@@ -1341,6 +1407,7 @@ def _compatibility_items_from_connection(
                 "reviewer_note": str(row["reviewer_note"]),
                 "reviewed_at": str(row["reviewed_at"]) if row["reviewed_at"] is not None else None,
                 "version": int(row["version"]),
+                "review_id": str(row["review_id"]) if row["review_id"] is not None else None,
                 "created_at": str(row["created_at"]),
             }
         )

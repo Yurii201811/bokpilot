@@ -365,14 +365,31 @@ els.reviewForm.addEventListener("submit", async (event) => {
 
 document.querySelectorAll("[data-export]").forEach((button) => {
   button.addEventListener("click", async () => {
-    const type = button.dataset.export;
-    const response = await fetch(`/api/export/${type}`);
-    const payload = await response.text();
-    if (!response.ok) {
-      throw new Error(payload || "Export failed");
-    }
-    els.exportPreview.textContent = payload.trim() || "No approved items are ready for export.";
-    toast(`${button.textContent} generated from approved items.`);
+    const format = button.dataset.export === "sie" ? "sie4i" : button.dataset.export;
+    const reviewIds = (state.workspace.items || [])
+      .filter((item) => item.status === "approved" && item.review_id)
+      .map((item) => item.review_id);
+    const batch = await request("/api/exports", {
+      method: "POST",
+      body: JSON.stringify({
+        format,
+        review_ids: reviewIds,
+        expected_workspace_revision: state.workspace.revision,
+      }),
+    });
+    state.workspace.revision = batch.workspace_revision;
+    const response = await fetch(`/api/exports/${batch.id}/download`);
+    if (!response.ok) throw new Error("Export download failed.");
+    const blob = await response.blob();
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = batch.filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    els.exportPreview.textContent = format === "sie4i"
+      ? `${batch.included_count} items · CP437 SIE 4I · SHA-256 ${batch.sha256}`
+      : `${await blob.text()}\nSHA-256 ${batch.sha256}`;
+    toast(`${batch.included_count} approved item${batch.included_count === 1 ? "" : "s"} exported.`);
   });
 });
 

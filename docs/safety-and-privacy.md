@@ -41,6 +41,11 @@ Recommended handling:
 - Remove or redact personal data before sharing issue reports.
 - If optional OCR or AI providers are added later, make them opt-in and document what leaves the machine.
 
+Created export batches are immutable local artifacts. JSON omits raw document
+text, evidence bytes, and local artifact paths by default. CSV neutralizes
+user-controlled cells that spreadsheet software could interpret as formulas.
+Downloads verify the stored byte count and SHA-256 before returning content.
+
 On POSIX systems Bokpilot creates the data directory and database with
 owner-only permissions. This reduces accidental exposure but does not encrypt
 the database. Backup and restore commands verify archive paths and content

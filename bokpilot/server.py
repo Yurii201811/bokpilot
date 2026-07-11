@@ -18,7 +18,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .exports import export_csv, export_json, export_sie_style, export_summary
+from .exports import (
+    create_csv_batch,
+    create_json_batch,
+    create_sie4i_batch,
+    export_csv,
+    export_json,
+    export_sie_style,
+    export_summary,
+    read_export_batch,
+)
 from .accounts import AccountCatalog
 from .domain import AccountingMethod, CompanyProfile, ReviewDecision, TransactionNature, VatTreatment
 from .imports import attach_source_evidence, commit_import, get_import_preview, preview_import
@@ -110,6 +119,25 @@ class BokpilotHandler(BaseHTTPRequestHandler):
                 self._text(export_csv(self.store.load()), "text/csv; charset=utf-8")
             elif path == "/api/export/sie":
                 self._text(export_sie_style(self.store.load()), "text/plain; charset=utf-8")
+            elif path.startswith("/api/exports/") and path.endswith("/download"):
+                batch_id = path.split("/")[3]
+                record = self.store.repository.export_record(batch_id)
+                if record is None:
+                    raise ApiError("not_found", "Export batch was not found.", HTTPStatus.NOT_FOUND)
+                content = read_export_batch(self.store.repository, batch_id)
+                format_name = str(record["format"])
+                extension = "se" if format_name == "sie4i" else format_name
+                filename = f"bokpilot-export-{str(record['created_at'])[:10].replace('-', '')}.{extension}"
+                content_type = {
+                    "json": "application/json; charset=utf-8",
+                    "csv": "text/csv; charset=utf-8",
+                    "sie4i": "application/octet-stream",
+                }.get(format_name, "application/octet-stream")
+                self._bytes(
+                    content,
+                    content_type,
+                    {"Content-Disposition": f'attachment; filename="{filename}"'},
+                )
             elif path.startswith("/api/"):
                 raise ApiError("not_found", "API route was not found.", HTTPStatus.NOT_FOUND)
             else:
@@ -248,6 +276,34 @@ class BokpilotHandler(BaseHTTPRequestHandler):
                     expected_version=payload.get("expected_version"),
                 )
                 self._json(result.to_dict())
+            elif path == "/api/exports":
+                format_name = str(payload.get("format") or "")
+                review_ids = payload.get("review_ids")
+                if not isinstance(review_ids, list) or not all(isinstance(value, str) for value in review_ids):
+                    raise ValueError("Export review_ids must be a list of strings.")
+                expected_revision = payload.get("expected_workspace_revision")
+                if format_name == "json":
+                    batch = create_json_batch(
+                        self.store.repository,
+                        review_ids,
+                        expected_revision=expected_revision,
+                    )
+                elif format_name == "csv":
+                    batch = create_csv_batch(
+                        self.store.repository,
+                        review_ids,
+                        expected_revision=expected_revision,
+                    )
+                elif format_name == "sie4i":
+                    batch = create_sie4i_batch(
+                        self.store.repository,
+                        review_ids,
+                        self.company_profile,
+                        expected_revision=expected_revision,
+                    )
+                else:
+                    raise ValueError("Export format must be json, csv, or sie4i.")
+                self._json(batch.to_dict(), HTTPStatus.CREATED)
             elif path == "/api/import/document":
                 raw = parse_document_text(
                     str(payload.get("filename") or "document.txt"),
@@ -322,11 +378,20 @@ class BokpilotHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _text(self, body: str, content_type: str) -> None:
-        encoded = body.encode("utf-8")
+        self._bytes(body.encode("utf-8"), content_type)
+
+    def _bytes(
+        self,
+        encoded: bytes,
+        content_type: str,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(encoded)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(encoded)
 
