@@ -39,10 +39,12 @@ class ServerApiTest(unittest.TestCase):
 
         self.assertEqual(workspace["summary"]["total_items"], 2)
         self.assertEqual(workspace["summary"]["needs_review"], 2)
-        self.assertEqual(workspace["items"][0]["raw"]["amount"], -249.0)
+        self.assertEqual(workspace["items"][0]["raw"]["amount_minor"], -24900)
+        self.assertIs(type(workspace["items"][0]["raw"]["amount_minor"]), int)
+        self.assertNotIn("amount", workspace["items"][0]["raw"])
         self.assertEqual(workspace["items"][0]["raw"]["source_filename"], "bank.csv")
         self.assertEqual(workspace["items"][0]["raw"]["source_row"], 2)
-        self.assertEqual(workspace["items"][1]["raw"]["amount"], 12500.0)
+        self.assertEqual(workspace["items"][1]["raw"]["amount_minor"], 1250000)
 
     def test_export_routes_include_only_approved_items(self):
         workspace = self._json_request(

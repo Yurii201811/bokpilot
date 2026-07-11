@@ -11,6 +11,7 @@ from typing import Any
 
 from .models import empty_workspace
 from .rules import apply_account_override, classify_transaction
+from .serialization import normalize_workspace
 
 
 def default_data_path() -> Path:
@@ -26,16 +27,17 @@ class WorkspaceStore:
 
     def load(self) -> dict[str, Any]:
         if not self.path.exists():
-            return empty_workspace()
+            return normalize_workspace(empty_workspace())
         with self.path.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
+            return normalize_workspace(json.load(handle))
 
     def save(self, workspace: dict[str, Any]) -> dict[str, Any]:
+        normalized = normalize_workspace(workspace)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("w", encoding="utf-8") as handle:
-            json.dump(workspace, handle, ensure_ascii=False, indent=2)
+            json.dump(normalized, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
-        return workspace
+        return normalized
 
     def reset(self) -> dict[str, Any]:
         workspace = empty_workspace()
