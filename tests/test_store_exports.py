@@ -11,6 +11,52 @@ from bokpilot.store import WorkspaceStore
 
 
 class StoreExportTest(unittest.TestCase):
+    def test_exports_use_explicit_minor_units_and_exact_sie_amounts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = WorkspaceStore(Path(tmp) / "workspace.json")
+            workspace = store.add_transactions(
+                [{"date": "2026-05-02", "description": "Fortnox subscription", "amount": -249}],
+                "test",
+            )
+            item_id = workspace["items"][0]["id"]
+            store.review_item(item_id, {"status": "approved"})
+            workspace = store.load()
+
+        csv_rows = list(csv.DictReader(io.StringIO(export_csv(workspace))))
+        json_packet = json.loads(export_json(workspace))
+        self.assertEqual(json_packet["metadata"]["schema_version"], 2)
+        self.assertEqual(csv_rows[0]["amount_minor"], "-24900")
+        self.assertEqual(csv_rows[0]["vat_amount_minor"], "4980")
+        self.assertNotIn("amount", csv_rows[0])
+        sie = export_sie_style(workspace)
+        self.assertIn("#TRANS 5420 {} 199.20", sie)
+        self.assertIn("#TRANS 2641 {} 49.80", sie)
+        self.assertIn("#TRANS 1930 {} -249.00", sie)
+
+    def test_duplicate_detection_uses_exact_minor_amount_and_normalized_description(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            amount_store = WorkspaceStore(Path(tmp) / "amount-workspace.json")
+            amount_store.add_transactions(
+                [{"date": "2026-05-02", "description": "Demo Vendor", "amount_minor": -100}],
+                "test",
+            )
+            different_amount = amount_store.add_transactions(
+                [{"date": "2026-05-02", "description": "Demo Vendor", "amount_minor": -101}],
+                "test",
+            )
+            description_store = WorkspaceStore(Path(tmp) / "description-workspace.json")
+            description_store.add_transactions(
+                [{"date": "2026-05-02", "description": "  Demo   Vendor ", "amount_minor": -100}],
+                "test",
+            )
+            exact_duplicate = description_store.add_transactions(
+                [{"date": "2026-05-02", "description": "demo vendor", "amount_minor": -100}],
+                "test",
+            )
+
+        self.assertNotIn("Possible duplicate", " ".join(different_amount["items"][-1]["suggestion"]["risk_flags"]))
+        self.assertIn("Possible duplicate", " ".join(exact_duplicate["items"][-1]["suggestion"]["risk_flags"]))
+
     def test_exports_include_only_human_approved_items(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = WorkspaceStore(Path(tmp) / "workspace.json")

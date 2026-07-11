@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
-from .models import JournalLine, Suggestion, money
+from .models import JournalLine, Suggestion
 
 
 BAS_ACCOUNTS: dict[str, str] = {
@@ -137,16 +137,18 @@ def classify_transaction(raw: dict[str, Any]) -> Suggestion:
             for key in ("description", "counterparty", "source_filename", "notes")
         )
     )
-    amount = money(raw.get("amount", "0"))
-    explicit_vat = raw.get("vat_amount")
+    amount_minor = _minor_field(raw, "amount_minor")
+    explicit_vat_minor = raw.get("vat_amount_minor")
+    if explicit_vat_minor is not None and type(explicit_vat_minor) is not int:
+        raise TypeError("vat_amount_minor must be an integer.")
     explicit_rate = raw.get("vat_rate")
 
-    if amount >= 0:
-        return _income_suggestion(amount, description, explicit_vat, explicit_rate)
+    if amount_minor >= 0:
+        return _income_suggestion(amount_minor, description, explicit_vat_minor, explicit_rate)
 
     for rule in EXPENSE_RULES:
         if any(keyword in description for keyword in rule.keywords):
-            return _expense_suggestion(amount, rule, explicit_vat, explicit_rate)
+            return _expense_suggestion(amount_minor, rule, explicit_vat_minor, explicit_rate)
 
     fallback = Rule(
         (),
@@ -157,11 +159,11 @@ def classify_transaction(raw: dict[str, Any]) -> Suggestion:
         "No strong rule matched. BAS 6991 is used as a temporary catch-all suggestion so a human can choose the right account.",
         ("Low confidence: choose the final BAS account manually.",),
     )
-    return _expense_suggestion(amount, fallback, explicit_vat, explicit_rate)
+    return _expense_suggestion(amount_minor, fallback, explicit_vat_minor, explicit_rate)
 
 
 def _income_suggestion(
-    amount: Decimal, description: str, explicit_vat: Any, explicit_rate: Any
+    amount_minor: int, description: str, explicit_vat_minor: int | None, explicit_rate: Any
 ) -> Suggestion:
     rate = _decide_rate(explicit_rate, Decimal("25"))
     if "momsfri" in description or "vat exempt" in description:
@@ -176,21 +178,21 @@ def _income_suggestion(
         explanation = "A positive bank transaction or customer invoice usually means income. This suggests Swedish sales with output VAT."
         confidence = 0.82
 
-    vat_amount = _decide_vat_amount(amount, rate, explicit_vat)
-    net = money(amount - vat_amount)
+    vat_amount_minor = _decide_vat_amount_minor(amount_minor, rate, explicit_vat_minor)
+    net_minor = amount_minor - vat_amount_minor
     lines = [
-        JournalLine("1930", BAS_ACCOUNTS["1930"], debit=amount),
-        JournalLine(account, BAS_ACCOUNTS[account], credit=net),
+        JournalLine("1930", BAS_ACCOUNTS["1930"], debit_minor=amount_minor),
+        JournalLine(account, BAS_ACCOUNTS[account], credit_minor=net_minor),
     ]
-    if vat_amount > 0:
-        lines.append(JournalLine("2611", BAS_ACCOUNTS["2611"], credit=vat_amount))
+    if vat_amount_minor > 0:
+        lines.append(JournalLine("2611", BAS_ACCOUNTS["2611"], credit_minor=vat_amount_minor))
 
     return Suggestion(
         category=category,
         bas_account=account,
         bas_account_name=BAS_ACCOUNTS[account],
         vat_rate=rate,
-        vat_amount=vat_amount,
+        vat_amount_minor=vat_amount_minor,
         confidence=confidence,
         explanation=explanation,
         journal_lines=lines,
@@ -199,25 +201,25 @@ def _income_suggestion(
 
 
 def _expense_suggestion(
-    amount: Decimal, rule: Rule, explicit_vat: Any, explicit_rate: Any
+    amount_minor: int, rule: Rule, explicit_vat_minor: int | None, explicit_rate: Any
 ) -> Suggestion:
-    gross = abs(amount)
+    gross_minor = abs(amount_minor)
     rate = _decide_rate(explicit_rate, rule.vat_rate)
-    vat_amount = _decide_vat_amount(gross, rate, explicit_vat)
-    net = money(gross - vat_amount)
+    vat_amount_minor = _decide_vat_amount_minor(gross_minor, rate, explicit_vat_minor)
+    net_minor = gross_minor - vat_amount_minor
     lines = [
-        JournalLine(rule.account, BAS_ACCOUNTS[rule.account], debit=net),
+        JournalLine(rule.account, BAS_ACCOUNTS[rule.account], debit_minor=net_minor),
     ]
-    if vat_amount > 0:
-        lines.append(JournalLine("2641", BAS_ACCOUNTS["2641"], debit=vat_amount))
-    lines.append(JournalLine("1930", BAS_ACCOUNTS["1930"], credit=gross))
+    if vat_amount_minor > 0:
+        lines.append(JournalLine("2641", BAS_ACCOUNTS["2641"], debit_minor=vat_amount_minor))
+    lines.append(JournalLine("1930", BAS_ACCOUNTS["1930"], credit_minor=gross_minor))
 
     return Suggestion(
         category=rule.category,
         bas_account=rule.account,
         bas_account_name=BAS_ACCOUNTS[rule.account],
         vat_rate=rate,
-        vat_amount=vat_amount,
+        vat_amount_minor=vat_amount_minor,
         confidence=rule.confidence,
         explanation=rule.explanation,
         journal_lines=lines,
@@ -231,45 +233,55 @@ def _decide_rate(explicit_rate: Any, default_rate: Decimal) -> Decimal:
     return Decimal(str(explicit_rate)).quantize(Decimal("0.01"))
 
 
-def _decide_vat_amount(gross: Decimal, rate: Decimal, explicit_vat: Any) -> Decimal:
-    if explicit_vat not in (None, "", "null"):
-        return money(explicit_vat)
+def _decide_vat_amount_minor(gross_minor: int, rate: Decimal, explicit_vat_minor: int | None) -> int:
+    if explicit_vat_minor is not None:
+        return explicit_vat_minor
     if rate == 0:
-        return Decimal("0.00")
+        return 0
     divisor = Decimal("1.00") + (rate / Decimal("100"))
-    net = money(gross / divisor)
-    return money(gross - net)
+    net_minor = int((Decimal(gross_minor) / divisor).quantize(Decimal("1")))
+    return gross_minor - net_minor
+
+
+def _minor_field(payload: dict[str, Any], key: str) -> int:
+    value = payload.get(key)
+    if type(value) is not int:
+        raise TypeError(f"{key} must be an integer.")
+    return value
 
 
 def apply_account_override(item: dict[str, Any], account: str, vat_rate: Any | None = None) -> dict[str, Any]:
     """Recalculate an item with a reviewer-selected BAS account."""
     raw = item["raw"]
-    amount = money(raw.get("amount", 0))
+    amount_minor = _minor_field(raw, "amount_minor")
     rate = Decimal(str(vat_rate if vat_rate is not None else item["suggestion"]["vat_rate"]))
     account_name = BAS_ACCOUNTS.get(account, "Reviewer-selected account")
-    gross = abs(amount)
-    vat_amount = _decide_vat_amount(gross, rate, raw.get("vat_amount"))
-    net = money(gross - vat_amount)
+    gross_minor = abs(amount_minor)
+    explicit_vat_minor = raw.get("vat_amount_minor")
+    if explicit_vat_minor is not None and type(explicit_vat_minor) is not int:
+        raise TypeError("vat_amount_minor must be an integer.")
+    vat_amount_minor = _decide_vat_amount_minor(gross_minor, rate, explicit_vat_minor)
+    net_minor = gross_minor - vat_amount_minor
 
-    if amount >= 0:
+    if amount_minor >= 0:
         lines = [
-            JournalLine("1930", BAS_ACCOUNTS["1930"], debit=gross),
-            JournalLine(account, account_name, credit=net),
+            JournalLine("1930", BAS_ACCOUNTS["1930"], debit_minor=gross_minor),
+            JournalLine(account, account_name, credit_minor=net_minor),
         ]
-        if vat_amount > 0:
-            lines.append(JournalLine("2611", BAS_ACCOUNTS["2611"], credit=vat_amount))
+        if vat_amount_minor > 0:
+            lines.append(JournalLine("2611", BAS_ACCOUNTS["2611"], credit_minor=vat_amount_minor))
     else:
-        lines = [JournalLine(account, account_name, debit=net)]
-        if vat_amount > 0:
-            lines.append(JournalLine("2641", BAS_ACCOUNTS["2641"], debit=vat_amount))
-        lines.append(JournalLine("1930", BAS_ACCOUNTS["1930"], credit=gross))
+        lines = [JournalLine(account, account_name, debit_minor=net_minor)]
+        if vat_amount_minor > 0:
+            lines.append(JournalLine("2641", BAS_ACCOUNTS["2641"], debit_minor=vat_amount_minor))
+        lines.append(JournalLine("1930", BAS_ACCOUNTS["1930"], credit_minor=gross_minor))
 
     suggestion = Suggestion(
         category="Reviewer override",
         bas_account=account,
         bas_account_name=account_name,
         vat_rate=rate,
-        vat_amount=vat_amount,
+        vat_amount_minor=vat_amount_minor,
         confidence=min(float(item["suggestion"].get("confidence", 0.5)), 0.75),
         explanation="A human reviewer changed the account or VAT treatment. The export records this as a reviewer override.",
         journal_lines=lines,

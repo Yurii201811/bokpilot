@@ -6,7 +6,7 @@ import csv
 import io
 import re
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -129,26 +129,14 @@ def _exact_money_candidate(text: str, locale: str) -> tuple[Decimal, int] | None
     return Decimal(normalized), len(fraction or "")
 
 
-def parse_money(value: Any) -> Decimal:
-    text = str(value or "").strip()
-    negative_parentheses = text.startswith("(") and text.endswith(")")
-    if negative_parentheses:
-        text = text[1:-1].strip()
-    text = text.replace("SEK", "").replace("kr", "").replace("\u00a0", " ")
-    text = text.replace(" ", "")
-    if "," in text and "." in text:
-        text = text.replace(".", "").replace(",", ".")
-    elif "," in text:
-        text = text.replace(",", ".")
-    text = re.sub(r"[^0-9.\-]", "", text)
-    if negative_parentheses and text and not text.startswith("-"):
-        text = f"-{text}"
-    if text in ("", "-", ".", "-."):
-        return Decimal("0.00")
-    try:
-        return Decimal(text).quantize(Decimal("0.01"))
-    except InvalidOperation as exc:
-        raise ValueError(f"Could not parse money value: {value!r}") from exc
+def parse_money(value: object, locale: str = "auto", currency: str = "SEK") -> Money:
+    """Public strict money boundary returning exact minor units."""
+    return parse_money_exact(value, locale, currency)
+
+
+def parse_date(value: object) -> date:
+    """Public strict date boundary returning a validated calendar date."""
+    return parse_date_exact(value)
 
 
 def parse_bank_csv(content: str, filename: str = "bank-transactions.csv") -> list[dict[str, Any]]:
@@ -179,7 +167,8 @@ def parse_bank_csv(content: str, filename: str = "bank-transactions.csv") -> lis
                 "bokforingsdatum",
             ),
         )
-        amount = _bank_amount(normalized)
+        currency = str(_first(normalized, ("currency", "valuta")) or "SEK").strip().upper()
+        amount = _bank_amount(normalized, currency)
         description = _first(
             normalized,
             (
@@ -199,16 +188,25 @@ def parse_bank_csv(content: str, filename: str = "bank-transactions.csv") -> lis
         )
         if not date_value or amount is None:
             raise ValueError(f"Missing required date or amount in CSV row {line_number}.")
+        try:
+            parsed_date = parse_date(date_value).isoformat()
+        except ValueError as exc:
+            raise ValueError(f"Invalid date in CSV row {line_number}: {date_value!r}.") from exc
+        extracted = {"date": str(date_value)}
+        for key in ("amount", "amount_sek", "belopp", "belopp_sek", "debit", "debet", "credit", "kredit"):
+            if normalized.get(key) not in (None, ""):
+                extracted[key] = str(normalized[key])
         rows.append(
             {
-                "date": _parse_date(date_value),
+                "date": parsed_date,
                 "description": description or "Bank transaction",
                 "counterparty": _first(normalized, ("counterparty", "motpart", "namn", "payee")) or "",
-                "amount": float(amount),
-                "currency": _first(normalized, ("currency", "valuta")) or "SEK",
+                "amount_minor": amount.minor,
+                "currency": amount.currency,
                 "source_type": "bank_csv",
                 "source_filename": filename,
                 "source_row": line_number,
+                "extracted": extracted,
             }
         )
     return rows
@@ -217,9 +215,11 @@ def parse_bank_csv(content: str, filename: str = "bank-transactions.csv") -> lis
 def parse_document_text(filename: str, content: str, kind: str = "document") -> dict[str, Any]:
     fields = _key_value_fields(content)
     lower = content.lower()
-    parsed_date = _parse_date(
-        _first(fields, ("date", "datum", "invoice_date", "fakturadatum")) or _first_date(content)
-    )
+    date_value = _first(fields, ("date", "datum", "invoice_date", "fakturadatum")) or _first_date(content)
+    try:
+        parsed_date = parse_date(date_value).isoformat()
+    except ValueError as exc:
+        raise ValueError(f"Invalid document date: {date_value!r}.") from exc
     total_value = _first(fields, ("total", "total_sek", "belopp", "amount", "summa", "att_betala"))
     if not total_value:
         total_value = _amount_after_label(content, ("total", "summa", "att betala", "belopp"))
@@ -228,35 +228,46 @@ def parse_document_text(filename: str, content: str, kind: str = "document") -> 
     customer = _first(fields, ("customer", "kund", "buyer", "köpare"))
     description = _first(fields, ("description", "beskrivning", "specification", "specifikation"))
 
-    amount = parse_money(total_value)
+    amount = parse_money(total_value, "auto", "SEK")
     is_income = any(marker in lower for marker in ("customer invoice", "kundfaktura", "invoice to", "faktura till"))
-    signed_amount = amount if is_income else -abs(amount)
+    signed_amount_minor = amount.minor if is_income else -abs(amount.minor)
     counterparty = customer if is_income else supplier
 
     raw: dict[str, Any] = {
         "date": parsed_date,
         "description": description or _fallback_description(filename, content),
         "counterparty": counterparty or supplier or customer or Path(filename).stem,
-        "amount": float(signed_amount),
-        "currency": "SEK",
+        "amount_minor": signed_amount_minor,
+        "currency": amount.currency,
         "source_type": kind,
         "source_filename": filename,
         "document_text": content[:5000],
+        "extracted": {"date": str(date_value), "amount": str(total_value)},
     }
     if vat_value:
-        raw["vat_amount"] = float(parse_money(vat_value))
+        raw["vat_amount_minor"] = parse_money(vat_value, "auto", amount.currency).minor
+        raw["extracted"]["vat_amount"] = str(vat_value)
     return raw
 
 
 def manual_transaction(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("date") in (None, ""):
+        raise ValueError("Manual transaction date is required.")
+    try:
+        parsed_date = parse_date(payload["date"]).isoformat()
+    except ValueError as exc:
+        raise ValueError(f"Invalid manual transaction date: {payload.get('date')!r}.") from exc
+    currency = str(payload.get("currency") or "SEK").strip().upper()
+    amount = parse_money(payload.get("amount"), "plain", currency)
     return {
-        "date": _parse_date(payload.get("date") or date.today().isoformat()),
+        "date": parsed_date,
         "description": str(payload.get("description") or "Manual transaction").strip(),
         "counterparty": str(payload.get("counterparty") or "").strip(),
-        "amount": float(parse_money(payload.get("amount", 0))),
-        "currency": str(payload.get("currency") or "SEK").strip().upper(),
+        "amount_minor": amount.minor,
+        "currency": amount.currency,
         "source_type": "manual",
         "source_filename": "manual-entry",
+        "extracted": {"date": str(payload["date"]), "amount": str(payload.get("amount"))},
     }
 
 
@@ -288,13 +299,13 @@ def _first(mapping: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return None
 
 
-def _bank_amount(mapping: dict[str, Any]) -> Decimal | None:
+def _bank_amount(mapping: dict[str, Any], currency: str) -> Money | None:
     amount_value = _first(
         mapping,
         ("amount", "amount_sek", "belopp", "belopp_sek", "value", "summa", "transaction_amount"),
     )
     if amount_value not in (None, ""):
-        return parse_money(amount_value)
+        return parse_money(amount_value, "auto", currency)
 
     debit_value = _first(
         mapping,
@@ -304,29 +315,15 @@ def _bank_amount(mapping: dict[str, Any]) -> Decimal | None:
         mapping,
         ("credit", "kredit", "deposit", "deposits", "insattning", "insättning", "in", "paid_in", "money_in", "inbetalt"),
     )
-    debit = parse_money(debit_value) if debit_value not in (None, "") else Decimal("0.00")
-    credit = parse_money(credit_value) if credit_value not in (None, "") else Decimal("0.00")
-    if debit == 0 and credit == 0:
+    debit = parse_money(debit_value, "auto", currency) if debit_value not in (None, "") else Money(0, currency)
+    credit = parse_money(credit_value, "auto", currency) if credit_value not in (None, "") else Money(0, currency)
+    if debit.minor == 0 and credit.minor == 0:
         return None
-    return abs(credit) - abs(debit)
+    return Money(abs(credit.minor) - abs(debit.minor), currency)
 
 
 def _parse_date(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return date.today().isoformat()
-    for pattern, repl in (
-        (r"^(\d{4})-(\d{2})-(\d{2})$", r"\1-\2-\3"),
-        (r"^(\d{4})/(\d{2})/(\d{2})$", r"\1-\2-\3"),
-        (r"^(\d{4})(\d{2})(\d{2})$", r"\1-\2-\3"),
-        (r"^(\d{2})/(\d{2})/(\d{4})$", r"\3-\2-\1"),
-        (r"^(\d{2})\.(\d{2})\.(\d{4})$", r"\3-\2-\1"),
-        (r"^(\d{2})-(\d{2})-(\d{4})$", r"\3-\2-\1"),
-    ):
-        match = re.match(pattern, text)
-        if match:
-            return re.sub(pattern, repl, text)
-    raise ValueError(f"Unsupported date format: {value!r}")
+    return parse_date(value).isoformat()
 
 
 def _key_value_fields(content: str) -> dict[str, str]:
@@ -341,7 +338,9 @@ def _key_value_fields(content: str) -> dict[str, str]:
 
 def _first_date(content: str) -> str:
     match = re.search(r"\b(20\d{2}[-/.]\d{2}[-/.]\d{2}|\d{2}[/.]\d{2}[/.]20\d{2})\b", content)
-    return match.group(1) if match else date.today().isoformat()
+    if match is None:
+        raise ValueError("Document date is required.")
+    return match.group(1)
 
 
 def _amount_after_label(content: str, labels: tuple[str, ...]) -> str:

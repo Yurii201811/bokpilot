@@ -6,6 +6,7 @@ import csv
 import io
 import json
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 
@@ -21,6 +22,7 @@ def export_json(workspace: dict[str, Any]) -> str:
     packet = {
         "metadata": {
             "program": "Bokpilot",
+            "schema_version": 2,
             "generated_on": date.today().isoformat(),
             "export_policy": "Only human-approved items are included.",
             "disclaimer": "Draft bookkeeping suggestions only; verify before posting or filing.",
@@ -38,7 +40,8 @@ def export_csv(workspace: dict[str, Any]) -> str:
             "item_id",
             "date",
             "description",
-            "amount",
+            "amount_minor",
+            "currency",
             "source_type",
             "source_filename",
             "source_row",
@@ -46,7 +49,7 @@ def export_csv(workspace: dict[str, Any]) -> str:
             "bas_account",
             "bas_account_name",
             "vat_rate",
-            "vat_amount",
+            "vat_amount_minor",
             "confidence",
             "reviewer_note",
             "explanation",
@@ -61,7 +64,8 @@ def export_csv(workspace: dict[str, Any]) -> str:
                 "item_id": item["id"],
                 "date": raw.get("date"),
                 "description": raw.get("description"),
-                "amount": raw.get("amount"),
+                "amount_minor": raw.get("amount_minor"),
+                "currency": raw.get("currency", "SEK"),
                 "source_type": raw.get("source_type", ""),
                 "source_filename": raw.get("source_filename", ""),
                 "source_row": raw.get("source_row", ""),
@@ -69,7 +73,7 @@ def export_csv(workspace: dict[str, Any]) -> str:
                 "bas_account": suggestion.get("bas_account"),
                 "bas_account_name": suggestion.get("bas_account_name"),
                 "vat_rate": suggestion.get("vat_rate"),
-                "vat_amount": suggestion.get("vat_amount"),
+                "vat_amount_minor": suggestion.get("vat_amount_minor"),
                 "confidence": suggestion.get("confidence"),
                 "reviewer_note": item.get("reviewer_note", ""),
                 "explanation": suggestion.get("explanation"),
@@ -99,7 +103,9 @@ def export_sie_style(workspace: dict[str, Any]) -> str:
         lines.append("{")
         for journal_line in item["suggestion"]["journal_lines"]:
             account = journal_line["account"]
-            amount = float(journal_line.get("debit", 0)) - float(journal_line.get("credit", 0))
+            debit_minor = _minor_value(journal_line, "debit_minor")
+            credit_minor = _minor_value(journal_line, "credit_minor")
+            amount = Decimal(debit_minor - credit_minor) / Decimal(100)
             lines.append(f"#TRANS {account} {{}} {amount:.2f}")
         lines.append("}")
     lines.append("")
@@ -128,3 +134,10 @@ def _used_accounts(workspace: dict[str, Any]) -> dict[str, str]:
 
 def _escape(value: str) -> str:
     return value.replace('"', "'")
+
+
+def _minor_value(payload: dict[str, Any], key: str) -> int:
+    value = payload.get(key)
+    if type(value) is not int:
+        raise TypeError(f"{key} must be an integer.")
+    return value

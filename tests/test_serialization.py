@@ -89,6 +89,13 @@ class SerializationTest(unittest.TestCase):
         self.assertEqual(suggestion["vat_amount_minor"], 4980)
         self.assertEqual(line["debit_minor"], 19920)
         self.assertEqual(line["credit_minor"], 0)
+        self.assertEqual(
+            [
+                (entry["debit_minor"], entry["credit_minor"])
+                for entry in suggestion["journal_lines"]
+            ],
+            [(19920, 0), (4980, 0), (0, 24900)],
+        )
         self.assertNotIn("amount", persisted["items"][0]["raw"])
         self.assertNotIn("vat_amount", persisted["items"][0]["raw"])
         self.assertNotIn("vat_amount", persisted["items"][0]["suggestion"])
@@ -107,6 +114,13 @@ class SerializationTest(unittest.TestCase):
             for name, decoder, payload in cases:
                 with self.subTest(name=name, invalid=invalid), self.assertRaises((TypeError, ValueError)):
                     decoder(payload)
+
+    def test_optional_vat_distinguishes_absent_from_explicit_zero(self):
+        self.assertIsNone(decode_source_vat({}))
+        self.assertEqual(decode_source_vat({"vat_amount": 0.0}).minor, 0)
+        self.assertEqual(decode_suggestion_vat({"vat_amount_minor": 0}).minor, 0)
+        with self.assertRaises(TypeError):
+            decode_source_vat({"vat_amount_minor": False, "vat_amount": 10.0})
 
 
 if __name__ == "__main__":

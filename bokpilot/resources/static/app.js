@@ -89,7 +89,7 @@ function renderTable() {
         <td><strong>${escapeHtml(item.id)}</strong></td>
         <td>${escapeHtml(raw.date)}</td>
         <td>${escapeHtml(raw.description)}</td>
-        <td class="${Number(raw.amount) < 0 ? "amount-negative" : "amount-positive"}">${formatter.format(Number(raw.amount))}</td>
+        <td class="${Number(raw.amount_minor) < 0 ? "amount-negative" : "amount-positive"}">${formatter.format(Number(raw.amount_minor) / 100)}</td>
         <td>${escapeHtml(suggestion.bas_account)} ${escapeHtml(suggestion.bas_account_name)}</td>
         <td>${escapeHtml(String(suggestion.vat_rate))}%</td>
         <td><span class="confidence ${Number(suggestion.confidence) < 0.7 ? "low" : ""}">${percentFormatter.format(Number(suggestion.confidence))}</span></td>
@@ -112,9 +112,9 @@ function renderDetail() {
   document.querySelector("#detail-title").textContent = raw.description;
   document.querySelector("#detail-status").textContent = statusLabel(item.status);
   document.querySelector("#detail-status").className = `status-pill ${item.status}`;
-  document.querySelector("#detail-amount").textContent = formatter.format(Number(raw.amount));
+  document.querySelector("#detail-amount").textContent = formatter.format(Number(raw.amount_minor) / 100);
   document.querySelector("#detail-bas").textContent = `${suggestion.bas_account} ${suggestion.bas_account_name}`;
-  document.querySelector("#detail-vat").textContent = `${suggestion.vat_rate}% (${formatter.format(Number(suggestion.vat_amount))})`;
+  document.querySelector("#detail-vat").textContent = `${suggestion.vat_rate}% (${formatter.format(Number(suggestion.vat_amount_minor) / 100)})`;
   document.querySelector("#detail-confidence").textContent = percentFormatter.format(Number(suggestion.confidence));
   document.querySelector("#detail-explanation").textContent = suggestion.explanation;
   document.querySelector("#review-account").value = suggestion.bas_account;
@@ -138,10 +138,10 @@ function renderDetail() {
       div.innerHTML = `
         <div>
           <strong>${escapeHtml(line.account)} ${escapeHtml(line.account_name)}</strong>
-          <span>${Number(line.debit) > 0 ? "Debit" : "Credit"}</span>
+          <span>${Number(line.debit_minor) > 0 ? "Debit" : "Credit"}</span>
         </div>
-        <span>${Number(line.debit) > 0 ? formatter.format(Number(line.debit)) : ""}</span>
-        <span>${Number(line.credit) > 0 ? formatter.format(Number(line.credit)) : ""}</span>
+        <span>${Number(line.debit_minor) > 0 ? formatter.format(Number(line.debit_minor) / 100) : ""}</span>
+        <span>${Number(line.credit_minor) > 0 ? formatter.format(Number(line.credit_minor) / 100) : ""}</span>
       `;
       return div;
     })

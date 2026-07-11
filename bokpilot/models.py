@@ -11,33 +11,23 @@ from decimal import Decimal
 from typing import Any
 
 
-Money = Decimal
-
-
-def money(value: Any) -> Decimal:
-    """Return a currency-safe Decimal rounded to öre precision."""
-    if isinstance(value, Decimal):
-        return value.quantize(Decimal("0.01"))
-    return Decimal(str(value)).quantize(Decimal("0.01"))
-
-
-def money_to_json(value: Decimal) -> float:
-    return float(money(value))
-
-
 @dataclass
 class JournalLine:
     account: str
     account_name: str
-    debit: Decimal = Decimal("0.00")
-    credit: Decimal = Decimal("0.00")
+    debit_minor: int = 0
+    credit_minor: int = 0
+
+    def __post_init__(self) -> None:
+        if type(self.debit_minor) is not int or type(self.credit_minor) is not int:
+            raise TypeError("Journal minor-unit amounts must be integers.")
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "account": self.account,
             "account_name": self.account_name,
-            "debit": money_to_json(self.debit),
-            "credit": money_to_json(self.credit),
+            "debit_minor": self.debit_minor,
+            "credit_minor": self.credit_minor,
         }
 
 
@@ -47,12 +37,16 @@ class Suggestion:
     bas_account: str
     bas_account_name: str
     vat_rate: Decimal
-    vat_amount: Decimal
+    vat_amount_minor: int
     confidence: float
     explanation: str
     journal_lines: list[JournalLine]
     risk_flags: list[str] = field(default_factory=list)
     review_required: bool = True
+
+    def __post_init__(self) -> None:
+        if type(self.vat_amount_minor) is not int:
+            raise TypeError("Suggestion VAT minor units must be an integer.")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -60,7 +54,7 @@ class Suggestion:
             "bas_account": self.bas_account,
             "bas_account_name": self.bas_account_name,
             "vat_rate": float(self.vat_rate),
-            "vat_amount": money_to_json(self.vat_amount),
+            "vat_amount_minor": self.vat_amount_minor,
             "confidence": round(self.confidence, 2),
             "explanation": self.explanation,
             "journal_lines": [line.to_dict() for line in self.journal_lines],
@@ -74,6 +68,7 @@ def empty_workspace() -> dict[str, Any]:
         "metadata": {
             "project": "Bokpilot",
             "version": "0.1.0",
+            "schema_version": 2,
             "locale": "sv-SE",
             "disclaimer": (
                 "Bokpilot generates accounting suggestions only. A qualified "

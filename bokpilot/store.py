@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -11,7 +12,7 @@ from typing import Any
 
 from .models import empty_workspace
 from .rules import apply_account_override, classify_transaction
-from .serialization import normalize_workspace
+from .serialization import normalize_source, normalize_workspace
 
 
 def default_data_path() -> Path:
@@ -47,7 +48,8 @@ class WorkspaceStore:
     def add_transactions(self, raw_items: list[dict[str, Any]], source: str) -> dict[str, Any]:
         workspace = self.load()
         for raw in raw_items:
-            workspace["items"].append(_build_item(workspace, raw, source))
+            normalized = normalize_source(raw)
+            workspace["items"].append(_build_item(workspace, normalized, source))
         workspace["events"].append(_event(f"Imported {len(raw_items)} item(s) from {source}."))
         return self.save(workspace)
 
@@ -88,17 +90,28 @@ def _build_item(workspace: dict[str, Any], raw: dict[str, Any], source: str) -> 
 
 
 def _duplicate_flags(workspace: dict[str, Any], raw: dict[str, Any]) -> list[str]:
-    key = (raw.get("date"), round(float(raw.get("amount", 0)), 2), str(raw.get("description", "")).lower())
+    key = (raw.get("date"), _minor_amount(raw), _normalized_description(raw))
     for item in workspace.get("items", []):
         existing = item.get("raw", {})
         existing_key = (
             existing.get("date"),
-            round(float(existing.get("amount", 0)), 2),
-            str(existing.get("description", "")).lower(),
+            _minor_amount(existing),
+            _normalized_description(existing),
         )
         if key == existing_key:
             return ["Possible duplicate: same date, amount, and description already exist."]
     return []
+
+
+def _minor_amount(raw: dict[str, Any]) -> int:
+    amount_minor = raw.get("amount_minor")
+    if type(amount_minor) is not int:
+        raise TypeError("amount_minor must be an integer.")
+    return amount_minor
+
+
+def _normalized_description(raw: dict[str, Any]) -> str:
+    return re.sub(r"\s+", " ", str(raw.get("description") or "")).strip().casefold()
 
 
 def _find_item(workspace: dict[str, Any], item_id: str) -> dict[str, Any]:

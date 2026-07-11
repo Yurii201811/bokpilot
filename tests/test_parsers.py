@@ -2,6 +2,7 @@ import unittest
 from datetime import date
 
 from bokpilot.parsers import (
+    manual_transaction,
     parse_bank_csv,
     parse_date_exact,
     parse_document_text,
@@ -11,6 +12,30 @@ from bokpilot.parsers import (
 
 
 class ParserTest(unittest.TestCase):
+    def test_public_parser_boundary_returns_exact_types(self):
+        from bokpilot.parsers import parse_date
+
+        self.assertEqual(parse_money("1 248,75 SEK", "sv-SE").minor, 124875)
+        self.assertEqual(parse_date("2026-05-02"), date(2026, 5, 2))
+        with self.assertRaises(TypeError):
+            parse_money(12.5, "plain")
+
+    def test_parser_outputs_schema_v2_minor_fields(self):
+        rows = parse_bank_csv("Datum;Beskrivning;Belopp\n2026-05-02;Fortnox subscription;-249,00\n")
+
+        self.assertEqual(rows[0]["amount_minor"], -24900)
+        self.assertIs(type(rows[0]["amount_minor"]), int)
+        self.assertNotIn("amount", rows[0])
+        self.assertEqual(rows[0]["date"], "2026-05-02")
+
+    def test_parser_boundaries_reject_missing_or_invalid_dates(self):
+        with self.assertRaisesRegex(ValueError, "date"):
+            parse_bank_csv("Datum;Beskrivning;Belopp\n2026-99-99;Invalid date;-249,00\n")
+        with self.assertRaisesRegex(ValueError, "date"):
+            parse_document_text("receipt.txt", "Supplier: Demo AB\nTotal: 100.00", "receipt")
+        with self.assertRaisesRegex(ValueError, "date"):
+            manual_transaction({"description": "Manual", "amount": "100.00"})
+
     def test_parse_money_exact_supports_locale_specific_formats(self):
         self.assertEqual(parse_money_exact("1 248,75 SEK", "sv-SE").minor, 124875)
         self.assertEqual(parse_money_exact("1,248.75", "en-US").minor, 124875)
@@ -46,9 +71,9 @@ class ParserTest(unittest.TestCase):
                 parse_date_exact(value)
 
     def test_parse_swedish_money_formats(self):
-        self.assertEqual(str(parse_money("1 248,75 SEK")), "1248.75")
-        self.assertEqual(str(parse_money("-59.00")), "-59.00")
-        self.assertEqual(str(parse_money("(1 248,75 SEK)")), "-1248.75")
+        self.assertEqual(parse_money("1 248,75 SEK").minor, 124875)
+        self.assertEqual(parse_money("-59.00").minor, -5900)
+        self.assertEqual(parse_money("(1 248,75 SEK)").minor, -124875)
 
     def test_parse_bank_csv_semicolon_headers(self):
         rows = parse_bank_csv(
@@ -60,7 +85,7 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["date"], "2026-05-02")
         self.assertEqual(rows[0]["description"], "Fortnox subscription")
-        self.assertEqual(rows[0]["amount"], -249.00)
+        self.assertEqual(rows[0]["amount_minor"], -24900)
 
     def test_parse_bank_csv_preserves_source_filename_and_row(self):
         rows = parse_bank_csv(
@@ -82,7 +107,7 @@ class ParserTest(unittest.TestCase):
 
         self.assertEqual(rows[0]["date"], "2026-05-02")
         self.assertEqual(rows[0]["description"], "Fortnox subscription")
-        self.assertEqual(rows[0]["amount"], -249.00)
+        self.assertEqual(rows[0]["amount_minor"], -24900)
 
     def test_parse_bank_csv_common_swedish_bank_aliases(self):
         rows = parse_bank_csv(
@@ -93,7 +118,7 @@ class ParserTest(unittest.TestCase):
 
         self.assertEqual(rows[0]["date"], "2026-05-02")
         self.assertEqual(rows[0]["description"], "Bankavgift företagskonto")
-        self.assertEqual(rows[0]["amount"], -59.00)
+        self.assertEqual(rows[0]["amount_minor"], -5900)
         self.assertEqual(rows[0]["source_filename"], "bank-export.csv")
 
     def test_parse_bank_csv_debit_credit_columns(self):
@@ -103,8 +128,8 @@ class ParserTest(unittest.TestCase):
             "2026-05-05;Customer invoice paid;;12500,00;SEK\n"
         )
 
-        self.assertEqual(rows[0]["amount"], -249.00)
-        self.assertEqual(rows[1]["amount"], 12500.00)
+        self.assertEqual(rows[0]["amount_minor"], -24900)
+        self.assertEqual(rows[1]["amount_minor"], 1250000)
 
     def test_parse_bank_csv_in_out_columns(self):
         rows = parse_bank_csv(
@@ -113,8 +138,8 @@ class ParserTest(unittest.TestCase):
             "2026-05-05;Customer invoice paid;;12500,00\n"
         )
 
-        self.assertEqual(rows[0]["amount"], -249.00)
-        self.assertEqual(rows[1]["amount"], 12500.00)
+        self.assertEqual(rows[0]["amount_minor"], -24900)
+        self.assertEqual(rows[1]["amount_minor"], 1250000)
 
     def test_parse_receipt_text(self):
         raw = parse_document_text(
@@ -124,8 +149,8 @@ class ParserTest(unittest.TestCase):
         )
 
         self.assertEqual(raw["counterparty"], "Pressbyran")
-        self.assertEqual(raw["amount"], -129.00)
-        self.assertEqual(raw["vat_amount"], 25.80)
+        self.assertEqual(raw["amount_minor"], -12900)
+        self.assertEqual(raw["vat_amount_minor"], 2580)
 
     def test_parse_customer_invoice_as_income(self):
         raw = parse_document_text(
@@ -134,7 +159,7 @@ class ParserTest(unittest.TestCase):
             "invoice",
         )
 
-        self.assertEqual(raw["amount"], 12500.00)
+        self.assertEqual(raw["amount_minor"], 1250000)
         self.assertEqual(raw["counterparty"], "Nordic Design Studio")
 
 

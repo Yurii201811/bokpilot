@@ -91,6 +91,13 @@ def encode_source_vat(amount: Money | None, *, template: Mapping[str, Any] | Non
     return encoded
 
 
+def normalize_source(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize one source dictionary without leaking a Money object to callers."""
+    record = decode_source(payload)
+    encoded = encode_source(record, template=payload)
+    return encode_source_vat(decode_source_vat(payload), template=encoded)
+
+
 def decode_suggestion_vat(payload: Mapping[str, Any], currency: str = "SEK") -> Money | None:
     """Decode optional suggestion VAT from either schema version."""
     return _decode_optional_money(payload, "vat_amount_minor", "vat_amount", currency=currency)
@@ -150,10 +157,7 @@ def normalize_workspace(payload: Mapping[str, Any]) -> dict[str, Any]:
         item = dict(item_payload)
         source_payload = dict(item.get("raw") or {})
         source = decode_source(source_payload)
-        normalized_source = encode_source(source, template=source_payload)
-        normalized_source = encode_source_vat(
-            decode_source_vat(source_payload), template=normalized_source
-        )
+        normalized_source = normalize_source(source_payload)
 
         suggestion_payload = dict(item.get("suggestion") or {})
         normalized_suggestion = encode_suggestion_vat(

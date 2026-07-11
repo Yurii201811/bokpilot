@@ -7,6 +7,7 @@ The workspace is stored as JSON:
   "metadata": {
     "project": "Bokpilot",
     "version": "0.1.0",
+    "schema_version": 2,
     "locale": "sv-SE",
     "disclaimer": "..."
   },
@@ -14,6 +15,12 @@ The workspace is stored as JSON:
   "events": []
 }
 ```
+
+Schema 2 stores accounting money as integer minor units. For SEK, `24900`
+means `249.00 SEK`. Binary floats are not used for source amounts, VAT, debit,
+or credit values. Bokpilot can read schema-v1 workspaces containing legacy
+major-unit `amount`, `vat_amount`, `debit`, and `credit` fields; the next save
+upgrades them to schema 2 and does not write those legacy fields again.
 
 ## Item
 
@@ -27,7 +34,7 @@ Each imported receipt, invoice, bank row, or manual transaction becomes one item
     "date": "2026-05-02",
     "description": "Fortnox subscription May",
     "counterparty": "Fortnox AB",
-    "amount": -249.0,
+    "amount_minor": -24900,
     "currency": "SEK",
     "source_type": "bank_csv",
     "source_filename": "seb-export-june.csv",
@@ -50,7 +57,7 @@ Each imported receipt, invoice, bank row, or manual transaction becomes one item
   "bas_account": "5420",
   "bas_account_name": "Programvaror",
   "vat_rate": 25.0,
-  "vat_amount": 49.8,
+  "vat_amount_minor": 4980,
   "confidence": 0.88,
   "explanation": "The description looks like a software or cloud service purchase...",
   "journal_lines": [],
@@ -65,8 +72,8 @@ Each imported receipt, invoice, bank row, or manual transaction becomes one item
 {
   "account": "5420",
   "account_name": "Programvaror",
-  "debit": 199.2,
-  "credit": 0.0
+  "debit_minor": 19920,
+  "credit_minor": 0
 }
 ```
 
@@ -89,3 +96,7 @@ For income, Bokpilot usually suggests:
 - `rejected`: human rejected the item; not exportable.
 
 Exports include approved human-reviewed items only.
+
+CSV exports name minor-unit columns explicitly (`amount_minor` and
+`vat_amount_minor`). Human-readable SIE-style output renders major units from
+the exact integers through `Decimal`, without a float conversion.
