@@ -139,7 +139,9 @@ def parse_date(value: object) -> date:
     return parse_date_exact(value)
 
 
-def parse_bank_csv(content: str, filename: str = "bank-transactions.csv") -> list[dict[str, Any]]:
+def parse_bank_csv(
+    content: str, filename: str = "bank-transactions.csv", locale: str = "auto"
+) -> list[dict[str, Any]]:
     sample = content[:2048]
     dialect = _sniff_csv_dialect(sample)
     reader = csv.DictReader(io.StringIO(content), dialect=dialect)
@@ -168,7 +170,7 @@ def parse_bank_csv(content: str, filename: str = "bank-transactions.csv") -> lis
             ),
         )
         currency = str(_first(normalized, ("currency", "valuta")) or "SEK").strip().upper()
-        amount = _bank_amount(normalized, currency)
+        amount = _bank_amount(normalized, currency, locale)
         description = _first(
             normalized,
             (
@@ -299,13 +301,13 @@ def _first(mapping: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return None
 
 
-def _bank_amount(mapping: dict[str, Any], currency: str) -> Money | None:
+def _bank_amount(mapping: dict[str, Any], currency: str, locale: str = "auto") -> Money | None:
     amount_value = _first(
         mapping,
         ("amount", "amount_sek", "belopp", "belopp_sek", "value", "summa", "transaction_amount"),
     )
     if amount_value not in (None, ""):
-        return parse_money(amount_value, "auto", currency)
+        return parse_money(amount_value, locale, currency)
 
     debit_value = _first(
         mapping,
@@ -315,8 +317,16 @@ def _bank_amount(mapping: dict[str, Any], currency: str) -> Money | None:
         mapping,
         ("credit", "kredit", "deposit", "deposits", "insattning", "insättning", "in", "paid_in", "money_in", "inbetalt"),
     )
-    debit = parse_money(debit_value, "auto", currency) if debit_value not in (None, "") else Money(0, currency)
-    credit = parse_money(credit_value, "auto", currency) if credit_value not in (None, "") else Money(0, currency)
+    debit = (
+        parse_money(debit_value, locale, currency)
+        if debit_value not in (None, "")
+        else Money(0, currency)
+    )
+    credit = (
+        parse_money(credit_value, locale, currency)
+        if credit_value not in (None, "")
+        else Money(0, currency)
+    )
     if debit.minor == 0 and credit.minor == 0:
         return None
     return Money(abs(credit.minor) - abs(debit.minor), currency)

@@ -81,6 +81,20 @@ class ServerApiTest(unittest.TestCase):
         self.assertIn(first_id, export_packet)
         self.assertNotIn(second_id, export_packet)
 
+    def test_import_bank_csv_route_propagates_explicit_locale(self):
+        workspace = self._json_request(
+            "/api/import/bank-csv",
+            {
+                "filename": "swedish-bank.csv",
+                "locale": "sv-SE",
+                "content": "Datum;Beskrivning;Belopp;Valuta\n2026-05-02;Grouped amount;12.340;SEK\n",
+            },
+            method="POST",
+            expected_status=201,
+        )
+
+        self.assertEqual(workspace["items"][0]["raw"]["amount_minor"], 1234000)
+
     def test_import_routes_reject_missing_dates(self):
         cases = (
             ("/api/import/document", {"filename": "receipt.txt", "kind": "receipt", "content": "Total: 100.00"}),

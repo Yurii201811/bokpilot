@@ -87,6 +87,24 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(rows[0]["description"], "Fortnox subscription")
         self.assertEqual(rows[0]["amount_minor"], -24900)
 
+    def test_parse_bank_csv_accepts_explicit_source_locales(self):
+        cases = (
+            ("sv-SE", "Datum;Beskrivning;Belopp;Valuta\n2026-05-02;Swedish grouped;12.340;SEK\n"),
+            ("en-US", "Date;Description;Amount;Currency\n2026-05-02;English grouped;12,340;SEK\n"),
+        )
+        for locale, content in cases:
+            with self.subTest(locale=locale):
+                rows = parse_bank_csv(content, locale=locale)
+                self.assertEqual(rows[0]["amount_minor"], 1234000)
+
+    def test_parse_bank_csv_auto_locale_keeps_grouped_values_ambiguous(self):
+        for value in ("12.340", "12,340"):
+            content = f"Datum;Beskrivning;Belopp;Valuta\n2026-05-02;Ambiguous;{value};SEK\n"
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "Ambiguous money format; choose the source locale"
+            ):
+                parse_bank_csv(content)
+
     def test_parse_bank_csv_preserves_source_filename_and_row(self):
         rows = parse_bank_csv(
             "Datum;Beskrivning;Belopp\n"
