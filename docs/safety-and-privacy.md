@@ -33,6 +33,12 @@ Default storage:
 data/workspace.json
 ```
 
+The browser asks before replacing or resetting a workspace that contains data. It then sends the decision in the custom `X-Bokpilot-Confirmation` header. The server requires that header when data would be erased; putting the public confirmation phrase in a request body is not sufficient. Browsers cannot attach the custom header to a cross-origin simple POST, and this server does not enable cross-origin access.
+
+All POST mutations share one per-server lock. The confirmation check and reset therefore complete without another import or review slipping between them on the same server.
+
+These controls are not authentication. Bokpilot binds to `127.0.0.1` by default and prints a warning for non-loopback hosts. Do not expose the MVP server to an untrusted network.
+
 Recommended handling:
 
 - Do not commit real receipts or invoices.
@@ -45,7 +51,7 @@ Recommended handling:
 - Text parsing is simple and intended for demos and structured text.
 - The SIE-style export is not a certified SIE implementation.
 - BAS rules cover only common sample scenarios.
-- The app has no authentication because it is intended for local use.
+- The app has no authentication because it is intended for loopback-only local use.
 - There is no encrypted document store yet.
 
 ## Future safety work

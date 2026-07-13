@@ -44,8 +44,8 @@ BOKPILOT_DATA_PATH=/tmp/bokpilot-workspace.json python3 -m bokpilot --port 8765
 | Route | Method | Purpose |
 | --- | --- | --- |
 | `/api/workspace` | GET | Load current workspace and summary metrics. |
-| `/api/load-sample` | POST | Reset and import sample Swedish scenarios. |
-| `/api/reset` | POST | Clear the local workspace. |
+| `/api/load-sample` | POST | Import sample Swedish scenarios. Replacing a non-empty workspace requires `X-Bokpilot-Confirmation: replace-with-samples`. |
+| `/api/reset` | POST | Clear the local workspace. Resetting a non-empty workspace requires `X-Bokpilot-Confirmation: reset-workspace`. |
 | `/api/import/bank-csv` | POST | Import CSV text. |
 | `/api/import/document` | POST | Import receipt/invoice text. |
 | `/api/import/manual` | POST | Add one manual transaction. |
@@ -59,8 +59,14 @@ BOKPILOT_DATA_PATH=/tmp/bokpilot-workspace.json python3 -m bokpilot --port 8765
 - Every suggestion has `review_required: true`.
 - New items start as `needs_review`.
 - Export functions include only `status == approved` and `human_reviewed == true`.
+- Destructive sample replacement and workspace reset are rejected unless a non-empty workspace receives the matching custom confirmation header. A body token alone is never sufficient, so a cross-origin simple POST cannot erase data.
+- One per-server lock serializes every POST mutation, keeping the destructive check and reset atomic relative to imports and reviews handled by that server.
 - The UI displays the disclaimer and does not offer posting, filing, payment, or live accounting-system mutation.
 - Risk flags are attached to low-confidence or context-dependent suggestions.
+
+The server binds to `127.0.0.1` by default and has no authentication. A
+non-loopback `--host` prints a warning; the confirmation header is a browser
+CSRF guard, not authorization for network exposure.
 
 ## Why no database framework yet
 

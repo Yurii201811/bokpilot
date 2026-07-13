@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import mimetypes
+import sys
+import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,10 +21,14 @@ from .store import WorkspaceStore
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC_ROOT = ROOT / "static"
+DESTRUCTIVE_CONFIRMATION_HEADER = "X-Bokpilot-Confirmation"
+RESET_CONFIRMATION = "reset-workspace"
+REPLACE_WITH_SAMPLES_CONFIRMATION = "replace-with-samples"
 
 
 class BokpilotHandler(BaseHTTPRequestHandler):
     store: WorkspaceStore
+    mutation_lock: threading.Lock
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
@@ -45,41 +52,63 @@ class BokpilotHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             payload = self._payload()
-            if path == "/api/reset":
-                self._json(self.store.reset())
-            elif path == "/api/load-sample":
-                self.store.reset()
-                workspace = self.store.add_transactions(load_sample_transactions(), "sample_data")
-                workspace["summary"] = export_summary(workspace)
-                self._json(workspace)
-            elif path == "/api/import/bank-csv":
-                rows = parse_bank_csv(str(payload.get("content", "")))
-                workspace = self.store.add_transactions(rows, payload.get("filename") or "bank-csv")
-                workspace["summary"] = export_summary(workspace)
-                self._json(workspace, HTTPStatus.CREATED)
-            elif path == "/api/import/document":
-                raw = parse_document_text(
-                    str(payload.get("filename") or "document.txt"),
-                    str(payload.get("content") or ""),
-                    str(payload.get("kind") or "document"),
-                )
-                workspace = self.store.add_transactions([raw], payload.get("filename") or "document")
-                workspace["summary"] = export_summary(workspace)
-                self._json(workspace, HTTPStatus.CREATED)
-            elif path == "/api/import/manual":
-                raw = manual_transaction(payload)
-                workspace = self.store.add_transactions([raw], "manual")
-                workspace["summary"] = export_summary(workspace)
-                self._json(workspace, HTTPStatus.CREATED)
-            elif path.startswith("/api/items/") and path.endswith("/review"):
-                item_id = path.split("/")[3]
-                workspace = self.store.review_item(item_id, payload)
-                workspace["summary"] = export_summary(workspace)
-                self._json(workspace)
-            else:
-                self._error("Unknown API route.", HTTPStatus.NOT_FOUND)
+            with self.mutation_lock:
+                self._dispatch_post(path, payload)
         except Exception as exc:  # noqa: BLE001
             self._error(str(exc))
+
+    def _dispatch_post(self, path: str, payload: dict) -> None:
+        if path == "/api/reset":
+            if _workspace_has_data(self.store.load()) and not self._has_confirmation(RESET_CONFIRMATION):
+                self._error(
+                    "Reset refused because the workspace contains data. Confirm in the Bokpilot UI first.",
+                    HTTPStatus.CONFLICT,
+                )
+                return
+            self._json(self.store.reset())
+        elif path == "/api/load-sample":
+            if _workspace_has_data(self.store.load()) and not self._has_confirmation(
+                REPLACE_WITH_SAMPLES_CONFIRMATION
+            ):
+                self._error(
+                    "Sample load refused because it would replace existing workspace data. "
+                    "Confirm in the Bokpilot UI first.",
+                    HTTPStatus.CONFLICT,
+                )
+                return
+            self.store.reset()
+            workspace = self.store.add_transactions(load_sample_transactions(), "sample_data")
+            workspace["summary"] = export_summary(workspace)
+            self._json(workspace)
+        elif path == "/api/import/bank-csv":
+            rows = parse_bank_csv(str(payload.get("content", "")))
+            workspace = self.store.add_transactions(rows, payload.get("filename") or "bank-csv")
+            workspace["summary"] = export_summary(workspace)
+            self._json(workspace, HTTPStatus.CREATED)
+        elif path == "/api/import/document":
+            raw = parse_document_text(
+                str(payload.get("filename") or "document.txt"),
+                str(payload.get("content") or ""),
+                str(payload.get("kind") or "document"),
+            )
+            workspace = self.store.add_transactions([raw], payload.get("filename") or "document")
+            workspace["summary"] = export_summary(workspace)
+            self._json(workspace, HTTPStatus.CREATED)
+        elif path == "/api/import/manual":
+            raw = manual_transaction(payload)
+            workspace = self.store.add_transactions([raw], "manual")
+            workspace["summary"] = export_summary(workspace)
+            self._json(workspace, HTTPStatus.CREATED)
+        elif path.startswith("/api/items/") and path.endswith("/review"):
+            item_id = path.split("/")[3]
+            workspace = self.store.review_item(item_id, payload)
+            workspace["summary"] = export_summary(workspace)
+            self._json(workspace)
+        else:
+            self._error("Unknown API route.", HTTPStatus.NOT_FOUND)
+
+    def _has_confirmation(self, expected: str) -> bool:
+        return self.headers.get(DESTRUCTIVE_CONFIRMATION_HEADER) == expected
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -123,8 +152,38 @@ class BokpilotHandler(BaseHTTPRequestHandler):
 
 
 def make_server(host: str, port: int, store: WorkspaceStore | None = None) -> ThreadingHTTPServer:
-    handler = type("ConfiguredBokpilotHandler", (BokpilotHandler,), {"store": store or WorkspaceStore()})
+    handler = type(
+        "ConfiguredBokpilotHandler",
+        (BokpilotHandler,),
+        {"store": store or WorkspaceStore(), "mutation_lock": threading.Lock()},
+    )
     return ThreadingHTTPServer((host, port), handler)
+
+
+def _workspace_has_data(workspace: dict) -> bool:
+    return bool(workspace.get("items") or workspace.get("events"))
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized = host.strip().removeprefix("[").removesuffix("]")
+    if normalized.casefold() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return False
+    if address.is_loopback:
+        return True
+    return bool(address.version == 6 and address.ipv4_mapped and address.ipv4_mapped.is_loopback)
+
+
+def _binding_warning(host: str) -> str | None:
+    if _is_loopback_host(host):
+        return None
+    return (
+        f"WARNING: {host!r} is not a loopback address. Bokpilot has no authentication; "
+        "do not expose this server to an untrusted network."
+    )
 
 
 def main() -> None:
@@ -138,6 +197,9 @@ def main() -> None:
     server = make_server(args.host, args.port, store)
     print(f"Bokpilot running at http://{args.host}:{args.port}")
     print(f"Local workspace: {store.path}")
+    warning = _binding_warning(args.host)
+    if warning:
+        print(warning, file=sys.stderr)
     server.serve_forever()
 
 
