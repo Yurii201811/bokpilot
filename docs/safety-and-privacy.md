@@ -35,7 +35,9 @@ data/workspace.json
 
 The browser asks before replacing or resetting a workspace that contains data. It then sends the decision in the custom `X-Bokpilot-Confirmation` header. The server requires that header when data would be erased; putting the public confirmation phrase in a request body is not sufficient. Browsers cannot attach the custom header to a cross-origin simple POST, and this server does not enable cross-origin access.
 
-All POST mutations share one per-server lock. The confirmation check and reset therefore complete without another import or review slipping between them on the same server.
+All POST mutations share one per-server lock. The confirmation check and reset therefore complete without another import or review slipping between them on the same server. Sample replacement constructs the complete new workspace in memory and saves it once, so a reported save failure keeps the previous workspace file.
+
+Each save is written and synced to a temporary file beside the workspace before an atomic runtime replacement. If JSON serialization, temporary writing, or replacement reports a failure, Bokpilot keeps the previous `workspace.json` and removes the incomplete temporary file. This is a process-level integrity safeguard, not a power-loss durability guarantee or a backup; keep separate backups for recovery from abrupt shutdown, deletion, disk failure, or an already-corrupt file.
 
 These controls are not authentication. Bokpilot binds to `127.0.0.1` by default and prints a warning for non-loopback hosts. Do not expose the MVP server to an untrusted network.
 

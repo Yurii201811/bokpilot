@@ -76,8 +76,7 @@ class BokpilotHandler(BaseHTTPRequestHandler):
                     HTTPStatus.CONFLICT,
                 )
                 return
-            self.store.reset()
-            workspace = self.store.add_transactions(load_sample_transactions(), "sample_data")
+            workspace = self.store.replace_with_transactions(load_sample_transactions(), "sample_data")
             workspace["summary"] = export_summary(workspace)
             self._json(workspace)
         elif path == "/api/import/bank-csv":

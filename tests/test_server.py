@@ -4,6 +4,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from bokpilot.server import (
     DESTRUCTIVE_CONFIRMATION_HEADER,
@@ -114,6 +115,26 @@ class ServerSafetyTest(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertNotEqual(payload["items"][0]["raw"]["description"], "My real transaction")
+
+    def test_failed_sample_save_preserves_existing_workspace(self):
+        original = self.store.add_transactions(
+            [{"date": "2026-05-02", "description": "Keep this transaction", "amount": -249}],
+            "manual",
+        )
+        original_bytes = self.store.path.read_bytes()
+
+        with mock.patch.object(self.store, "save", side_effect=OSError("simulated save failure")) as save:
+            status, payload = self.post(
+                "/api/load-sample",
+                {},
+                {DESTRUCTIVE_CONFIRMATION_HEADER: REPLACE_WITH_SAMPLES_CONFIRMATION},
+            )
+
+        self.assertEqual(status, 400)
+        self.assertIn("simulated save failure", payload["error"])
+        self.assertEqual(save.call_count, 1)
+        self.assertEqual(self.store.path.read_bytes(), original_bytes)
+        self.assertEqual(self.store.load(), original)
 
     def test_reset_requires_custom_header_to_erase_existing_workspace(self):
         original = self.store.add_transactions(

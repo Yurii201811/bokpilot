@@ -61,6 +61,8 @@ BOKPILOT_DATA_PATH=/tmp/bokpilot-workspace.json python3 -m bokpilot --port 8765
 - Export functions include only `status == approved` and `human_reviewed == true`.
 - Destructive sample replacement and workspace reset are rejected unless a non-empty workspace receives the matching custom confirmation header. A body token alone is never sufficient, so a cross-origin simple POST cannot erase data.
 - One per-server lock serializes every POST mutation, keeping the destructive check and reset atomic relative to imports and reviews handled by that server.
+- Sample replacement builds the complete sample workspace in memory and performs one save, so a failed final save leaves the previous workspace file intact.
+- Workspace persistence writes and syncs complete JSON to a temporary file in the data directory, then atomically replaces `workspace.json` for runtime readers. A reported serialization, temporary-write, or replacement failure leaves the previous workspace intact and removes the temporary file. This does not claim durability across abrupt power or operating-system failure.
 - The UI displays the disclaimer and does not offer posting, filing, payment, or live accounting-system mutation.
 - Risk flags are attached to low-confidence or context-dependent suggestions.
 

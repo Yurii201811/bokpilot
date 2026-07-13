@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -32,9 +33,22 @@ class WorkspaceStore:
 
     def save(self, workspace: dict[str, Any]) -> dict[str, Any]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("w", encoding="utf-8") as handle:
-            json.dump(workspace, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=self.path.parent,
+            prefix=f".{self.path.name}.",
+            suffix=".tmp",
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(workspace, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, self.path)
+        except Exception:
+            temporary_path.unlink(missing_ok=True)
+            raise
         return workspace
 
     def reset(self) -> dict[str, Any]:
@@ -43,7 +57,17 @@ class WorkspaceStore:
         return workspace
 
     def add_transactions(self, raw_items: list[dict[str, Any]], source: str) -> dict[str, Any]:
-        workspace = self.load()
+        return self._save_transactions(self.load(), raw_items, source)
+
+    def replace_with_transactions(self, raw_items: list[dict[str, Any]], source: str) -> dict[str, Any]:
+        return self._save_transactions(empty_workspace(), raw_items, source)
+
+    def _save_transactions(
+        self,
+        workspace: dict[str, Any],
+        raw_items: list[dict[str, Any]],
+        source: str,
+    ) -> dict[str, Any]:
         for raw in raw_items:
             workspace["items"].append(_build_item(workspace, raw, source))
         workspace["events"].append(_event(f"Imported {len(raw_items)} item(s) from {source}."))

@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from bokpilot.exports import approved_items, export_csv, export_json, export_sie_style, export_summary
 from bokpilot.sample_data import load_sample_transactions
@@ -72,6 +73,39 @@ class StoreExportTest(unittest.TestCase):
 
             self.assertGreaterEqual(len(workspace["items"]), 10)
             self.assertTrue(all(isinstance(item["suggestion"]["risk_flags"], list) for item in workspace["items"]))
+
+    def test_failed_save_preserves_previous_workspace_and_removes_temporary_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = WorkspaceStore(Path(tmp) / "workspace.json")
+            original = store.add_transactions(
+                [{"date": "2026-05-02", "description": "Fortnox subscription", "amount": -249}],
+                "test",
+            )
+            original_bytes = store.path.read_bytes()
+
+            with self.assertRaises(TypeError):
+                store.save({"items": [object()], "events": []})
+
+            self.assertEqual(store.path.read_bytes(), original_bytes)
+            self.assertEqual(store.load(), original)
+            self.assertEqual(list(store.path.parent.glob(f".{store.path.name}.*.tmp")), [])
+
+    def test_failed_replace_preserves_previous_workspace_and_removes_temporary_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = WorkspaceStore(Path(tmp) / "workspace.json")
+            original = store.add_transactions(
+                [{"date": "2026-05-02", "description": "Fortnox subscription", "amount": -249}],
+                "test",
+            )
+            original_bytes = store.path.read_bytes()
+
+            with mock.patch("bokpilot.store.os.replace", side_effect=OSError("simulated replace failure")):
+                with self.assertRaisesRegex(OSError, "simulated replace failure"):
+                    store.reset()
+
+            self.assertEqual(store.path.read_bytes(), original_bytes)
+            self.assertEqual(store.load(), original)
+            self.assertEqual(list(store.path.parent.glob(f".{store.path.name}.*.tmp")), [])
 
 
 if __name__ == "__main__":
