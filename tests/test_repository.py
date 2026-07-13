@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import Path
 
 from bokpilot.domain import (
+    EvidenceStatus,
     JournalLine,
     PostingDraft,
     ReviewDecision,
@@ -82,6 +83,25 @@ class RepositoryTest(unittest.TestCase):
         self.assertEqual((duplicate.inserted, duplicate.skipped, duplicate.revision), (0, 1, 1))
         self.assertEqual(loaded, record)
         self.assertEqual(self.repository.workspace_revision(), 1)
+
+    def test_compatibility_snapshot_overlays_authoritative_attachment_columns(self):
+        record = replace(
+            source_record("Previously attached", -24_900),
+            evidence_status=EvidenceStatus.LEGACY_UNAVAILABLE,
+        )
+        self.repository.import_sources([record])
+        attachment_sha256 = "a" * 64
+        with sqlite3.connect(self.path) as connection:
+            connection.execute(
+                "UPDATE sources SET attachment_sha256 = ?, evidence_status = ?, version = 2 "
+                "WHERE id = ?",
+                (attachment_sha256, EvidenceStatus.AVAILABLE.value, record.id),
+            )
+
+        raw = self.repository.compatibility_items()[0]["raw"]
+
+        self.assertEqual(raw["evidence_status"], EvidenceStatus.AVAILABLE.value)
+        self.assertEqual(raw["attachment_sha256"], attachment_sha256)
 
     def test_unique_import_key_applies_without_source_row(self):
         first = source_record("No row A", -100)

@@ -7,7 +7,7 @@ from typing import Any
 
 from .accounting import build_posting, posting_issues
 from .accounts import AccountCatalog
-from .domain import CompanyProfile, PostingDraft, ReviewDecision, SourceRecord
+from .domain import CompanyProfile, EvidenceStatus, PostingDraft, ReviewDecision, SourceRecord
 from .repository import Repository
 
 
@@ -54,6 +54,14 @@ _MESSAGES = {
     "unbalanced_lines": ("posting", "Draft journal lines are not balanced."),
     "missing_risk_acknowledgement": ("risk", "Acknowledge the highlighted risk."),
     "unresolved_duplicate": ("duplicate", "Resolve the duplicate candidate first."),
+    "reviewer_note_required": (
+        "reviewer_note",
+        "Add a reviewer note confirming the manually attested evidence.",
+    ),
+    "source_evidence_unavailable": (
+        "evidence",
+        "Attach the original source file before approval.",
+    ),
 }
 
 
@@ -67,6 +75,13 @@ def approval_issues(
     codes = list(posting_issues(draft))
     if repository is not None and repository.unresolved_duplicate_ids(record.id):
         codes.append("unresolved_duplicate")
+    if (
+        record.evidence_status is EvidenceStatus.MANUAL_ATTESTED
+        and not decision.reviewer_note.strip()
+    ):
+        codes.append("reviewer_note_required")
+    if record.evidence_status is EvidenceStatus.LEGACY_UNAVAILABLE:
+        codes.append("source_evidence_unavailable")
     values: list[ReviewIssue] = []
     for code in dict.fromkeys(codes):
         field, message = _MESSAGES.get(code, ("review", code.replace("_", " ").capitalize() + "."))

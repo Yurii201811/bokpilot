@@ -4,10 +4,10 @@ from dataclasses import replace
 from pathlib import Path
 
 from bokpilot.accounting import build_posting
-from bokpilot.domain import ReviewDecision, TransactionNature, VatTreatment
+from bokpilot.domain import EvidenceStatus, ReviewDecision, TransactionNature, VatTreatment
 from bokpilot.domain import JournalLine, PostingDraft
 from bokpilot.repository import Repository
-from bokpilot.review import approval_issues, record_duplicate_decision, record_review
+from bokpilot.review import ApprovalBlocked, approval_issues, record_duplicate_decision, record_review
 from tests.helpers import approved_test_catalog, company_profile, source_record
 
 
@@ -119,6 +119,62 @@ class ReviewPolicyTest(unittest.TestCase):
             expected_version=1,
         )
         self.assertEqual(result.status, "rejected")
+
+    def test_source_evidence_gate_blocks_legacy_and_requires_manual_review_note(self):
+        legacy = replace(
+            source_record("Legacy source", -10000),
+            evidence_status=EvidenceStatus.LEGACY_UNAVAILABLE,
+        )
+        decision = self.decision()
+        legacy_draft = build_posting(legacy, decision, self.profile, self.catalog)
+
+        self.assertIn(
+            "source_evidence_unavailable",
+            {issue.code for issue in approval_issues(legacy, decision, legacy_draft)},
+        )
+        self.repository.import_sources([legacy])
+        with self.assertRaises(ApprovalBlocked):
+            record_review(
+                self.repository,
+                legacy.id,
+                action="approved",
+                decision=decision,
+                profile=self.profile,
+                catalog=self.catalog,
+                expected_version=1,
+            )
+        rejected = record_review(
+            self.repository,
+            legacy.id,
+            action="rejected",
+            decision=decision,
+            profile=self.profile,
+            catalog=self.catalog,
+            expected_version=1,
+        )
+        self.assertEqual(rejected.status, "rejected")
+
+        manual_attested = replace(
+            source_record("Manually attested", -10000),
+            evidence_status=EvidenceStatus.MANUAL_ATTESTED,
+        )
+        blank_note = self.decision(reviewer_note="")
+        manual_draft = build_posting(manual_attested, blank_note, self.profile, self.catalog)
+        self.assertIn(
+            "reviewer_note_required",
+            {issue.code for issue in approval_issues(manual_attested, blank_note, manual_draft)},
+        )
+        self.assertNotIn(
+            "reviewer_note_required",
+            {
+                issue.code
+                for issue in approval_issues(
+                    manual_attested,
+                    decision,
+                    build_posting(manual_attested, decision, self.profile, self.catalog),
+                )
+            },
+        )
 
     def test_duplicate_decisions_clear_one_gate_or_make_source_non_exportable(self):
         first = source_record("Monthly fee", -10000)

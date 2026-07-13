@@ -265,6 +265,12 @@
               <section class="reasoning">
                 <h3>Source provenance</h3>
                 <p id="source-provenance"></p>
+                <form id="source-attachment-form" class="attachment-form" hidden>
+                  <p>Approval is blocked until you attach the original source file. Attachments are add-only and stored locally by SHA-256.</p>
+                  <label for="source-attachment-input">Original source file</label>
+                  <input id="source-attachment-input" name="source_attachment" type="file" />
+                  <button class="button" type="submit">Attach source evidence</button>
+                </form>
                 <dl id="extracted-fields" class="detail-facts"></dl>
               </section>
               <section class="reasoning">

@@ -38,8 +38,10 @@ class UiParser(HTMLParser):
 class StaticUiTest(unittest.TestCase):
     def setUp(self):
         parser = UiParser()
-        parser.feed(files("bokpilot").joinpath("resources", "static", "index.html").read_text())
+        static = files("bokpilot").joinpath("resources", "static")
+        parser.feed(static.joinpath("index.html").read_text())
         self.parser = parser
+        self.script = static.joinpath("app.js").read_text()
 
     def test_ids_are_unique_and_controls_are_labelled(self):
         self.assertEqual(len(self.parser.ids), len(set(self.parser.ids)))
@@ -52,6 +54,13 @@ class StaticUiTest(unittest.TestCase):
         self.assertGreaterEqual(self.parser.alerts, 1)
         self.assertGreaterEqual(self.parser.statuses, 1)
         self.assertEqual(self.parser.table_row_tabindex, [])
+
+    def test_legacy_evidence_has_a_labelled_attachment_recovery_form(self):
+        self.assertIn("source-attachment-form", self.parser.ids)
+        self.assertIn("source-attachment-input", self.parser.ids)
+        self.assertIn("source-attachment-input", self.parser.labels)
+        self.assertIn("state.attachmentSourceId !== item.id", self.script)
+        self.assertIn("state.attachmentSourceId = item.id", self.script)
 
 
 if __name__ == "__main__":

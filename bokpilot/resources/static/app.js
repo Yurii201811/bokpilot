@@ -1,6 +1,7 @@
 const state = {
   workspace: null,
   selectedId: null,
+  attachmentSourceId: null,
   statusFilter: "all",
   importPreview: null,
   token: null,
@@ -33,6 +34,8 @@ const els = {
   importPreviewSummary: document.querySelector("#import-preview-summary"),
   importPreviewIssues: document.querySelector("#import-preview-issues"),
   commitImport: document.querySelector("#commit-import"),
+  sourceAttachmentForm: document.querySelector("#source-attachment-form"),
+  sourceAttachmentInput: document.querySelector("#source-attachment-input"),
   manualForm: document.querySelector("#manual-form"),
   manualDate: document.querySelector("#manual-date"),
   statusFilter: document.querySelector("#status-filter"),
@@ -141,7 +144,15 @@ function renderDetail() {
   const item = selectedItem();
   els.empty.hidden = Boolean(item);
   els.detail.hidden = !item;
-  if (!item) return;
+  if (!item) {
+    els.sourceAttachmentForm.reset();
+    state.attachmentSourceId = null;
+    return;
+  }
+  if (state.attachmentSourceId !== item.id) {
+    els.sourceAttachmentForm.reset();
+    state.attachmentSourceId = item.id;
+  }
 
   const raw = item.raw;
   const suggestion = item.suggestion;
@@ -157,12 +168,16 @@ function renderDetail() {
   document.querySelector("#review-account").value = suggestion.bas_account;
   document.querySelector("#review-vat").value = String(Number(suggestion.vat_rate));
   document.querySelector("#review-note").value = item.reviewer_note || "";
+  const needsSourceAttachment = raw.evidence_status === "legacy_unavailable";
   const evidence = raw.evidence_status === "available"
     ? `File ${raw.source_filename || "source"}, row ${raw.source_row || "n/a"}, SHA-256 ${(raw.attachment_sha256 || "").slice(0, 12)}…`
-    : raw.evidence_status === "legacy_unavailable"
-      ? "Legacy source bytes are unavailable; approval requires extra care."
+    : needsSourceAttachment
+      ? "Legacy source bytes are unavailable; approval is blocked until the original source file is attached."
       : "Manual entry supported by reviewer attestation.";
   document.querySelector("#source-provenance").textContent = evidence;
+  els.sourceAttachmentForm.hidden = !needsSourceAttachment;
+  els.sourceAttachmentInput.required = needsSourceAttachment;
+  if (!needsSourceAttachment) els.sourceAttachmentForm.reset();
   document.querySelector("#extracted-fields").replaceChildren(
     ...Object.entries(raw.extracted || {}).map(([key, value]) => {
       const wrapper = document.createElement("div");
@@ -438,6 +453,37 @@ els.fileForm.addEventListener("submit", async (event) => {
   toast(`${file.name} previewed without creating review items.`);
 });
 
+els.sourceAttachmentForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const item = selectedItem();
+  const file = els.sourceAttachmentInput.files[0];
+  if (!item || item.raw.evidence_status !== "legacy_unavailable") {
+    toast("This item no longer needs source evidence.");
+    return;
+  }
+  if (!file) {
+    toast("Choose the original source file first.");
+    return;
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let result;
+  try {
+    result = await request(`/api/sources/${item.id}/attachment`, {
+      method: "POST",
+      body: JSON.stringify({
+        filename: file.name,
+        media_type: file.type || "application/octet-stream",
+        content_base64: bytesToBase64(bytes),
+        expected_version: item.version,
+      }),
+    });
+  } catch (_error) {
+    return;
+  }
+  await refresh();
+  toast(`Source evidence attached · SHA-256 ${result.sha256.slice(0, 12)}…`);
+});
+
 els.commitImport.addEventListener("click", async () => {
   if (!state.importPreview) return;
   const result = await request(`/api/imports/${state.importPreview.batch_id}/commit`, {
@@ -477,10 +523,14 @@ els.reviewForm.addEventListener("submit", async (event) => {
   data.nature = Number(item.raw.amount_minor) < 0 ? "expense" : "revenue";
   data.expected_version = item.version;
   data.risk_acknowledged = Boolean(data.risk_acknowledged);
-  await request(`/api/sources/${item.id}/review`, {
-    method: "POST",
-    body: JSON.stringify(data),
-  });
+  try {
+    await request(`/api/sources/${item.id}/review`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  } catch (_error) {
+    return;
+  }
   await refresh();
   const remaining = filteredItems();
   const next = remaining.find((value) => value.status === "needs_review");

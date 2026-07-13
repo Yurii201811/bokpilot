@@ -838,12 +838,18 @@ class RepositoryTransaction:
         media_type: str = "application/octet-stream",
     ) -> MutationResult:
         self._require_source(source_id)
+        source = self._connection.execute(
+            "SELECT raw_json FROM sources WHERE id = ?", (source_id,)
+        ).fetchone()
         existing = self._connection.execute(
             "SELECT id FROM source_attachments WHERE source_id = ? AND sha256 = ?",
             (source_id, sha256),
         ).fetchone()
         if existing is not None:
             return MutationResult(self.projected_revision, 0, 1, ())
+        raw = dict(json.loads(str(source["raw_json"])))
+        raw["attachment_sha256"] = sha256
+        raw["evidence_status"] = EvidenceStatus.AVAILABLE.value
         identifier = f"attachment-{uuid4().hex}"
         self._connection.execute(
             "INSERT INTO source_attachments "
@@ -861,9 +867,15 @@ class RepositoryTransaction:
             ),
         )
         self._connection.execute(
-            "UPDATE sources SET attachment_sha256 = ?, evidence_status = ?, version = version + 1 "
+            "UPDATE sources SET attachment_sha256 = ?, evidence_status = ?, raw_json = ?, "
+            "version = version + 1 "
             "WHERE id = ?",
-            (sha256, EvidenceStatus.AVAILABLE.value, source_id),
+            (
+                sha256,
+                EvidenceStatus.AVAILABLE.value,
+                json.dumps(raw, sort_keys=True, separators=(",", ":")),
+                source_id,
+            ),
         )
         self.dirty = True
         return MutationResult(self.projected_revision, 1, 0, (identifier,))
@@ -1454,11 +1466,17 @@ def _compatibility_items_from_connection(
         suggestion_json = row["suggestion_json"]
         suggestion = json.loads(str(suggestion_json)) if suggestion_json is not None else {}
         status = str(row["status"])
+        raw = dict(json.loads(str(row["raw_json"])))
+        raw["evidence_status"] = str(row["evidence_status"])
+        if row["attachment_sha256"] is None:
+            raw.pop("attachment_sha256", None)
+        else:
+            raw["attachment_sha256"] = str(row["attachment_sha256"])
         items.append(
             {
                 "id": str(row["id"]),
                 "source": str(row["source_label"]),
-                "raw": dict(json.loads(str(row["raw_json"]))),
+                "raw": raw,
                 "suggestion": dict(suggestion),
                 "status": status,
                 "human_reviewed": status in {"approved", "rejected"},

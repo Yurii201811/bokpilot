@@ -68,15 +68,16 @@ class ServerApiTest(unittest.TestCase):
             self.assertNotIn("credit", line)
 
     def test_export_routes_include_only_approved_items(self):
+        source_bytes = (
+            "Datum;Beskrivning;Belopp\n"
+            "2026-05-02;Fortnox subscription;-249,00\n"
+            "2026-05-06;Bankavgift;-59,00\n"
+        ).encode("utf-8")
         workspace = self._json_request(
             "/api/import/bank-csv",
             {
                 "filename": "bank.csv",
-                "content": (
-                    "Datum;Beskrivning;Belopp\n"
-                    "2026-05-02;Fortnox subscription;-249,00\n"
-                    "2026-05-06;Bankavgift;-59,00\n"
-                ),
+                "content": source_bytes.decode("utf-8"),
             },
             method="POST",
             expected_status=201,
@@ -86,17 +87,40 @@ class ServerApiTest(unittest.TestCase):
 
         first = workspace["items"][0]
         second = workspace["items"][1]
-        approved = self._json_request(
-            f"/api/sources/{first_id}/review",
+        approval_payload = {
+            "status": "approved",
+            "nature": "expense",
+            "bas_account": first["suggestion"]["bas_account"],
+            "vat_rate": str(first["suggestion"]["vat_rate"]),
+            "reviewer_note": "Synthetic test approval",
+            "risk_acknowledged": True,
+            "expected_version": first["version"],
+        }
+        with self.assertRaises(HTTPError) as raised:
+            self._json_request(
+                f"/api/sources/{first_id}/review",
+                approval_payload,
+                method="POST",
+            )
+        blocked = json.loads(raised.exception.read())
+        self.assertEqual(raised.exception.code, 409)
+        self.assertEqual(blocked["error"]["code"], "approval_blocked")
+        self.assertIn("evidence", blocked["error"]["fields"])
+
+        attached = self._json_request(
+            f"/api/sources/{first_id}/attachment",
             {
-                "status": "approved",
-                "nature": "expense",
-                "bas_account": first["suggestion"]["bas_account"],
-                "vat_rate": str(first["suggestion"]["vat_rate"]),
-                "reviewer_note": "Synthetic test approval",
-                "risk_acknowledged": True,
+                "filename": "bank.csv",
+                "media_type": "text/csv; charset=utf-8",
+                "content_base64": base64.b64encode(source_bytes).decode("ascii"),
                 "expected_version": first["version"],
             },
+            method="POST",
+            expected_status=201,
+        )
+        approved = self._json_request(
+            f"/api/sources/{first_id}/review",
+            {**approval_payload, "expected_version": attached["source_version"]},
             method="POST",
         )
         self._json_request(
@@ -215,6 +239,10 @@ class ServerApiTest(unittest.TestCase):
             f"/api/sources/{source_id}/attachment", payload, method="POST", expected_status=201
         )
         self.assertEqual(attached["source_version"], 2)
+        current = self._json_request("/api/workspace")
+        current_raw = next(item["raw"] for item in current["items"] if item["id"] == source_id)
+        self.assertEqual(current_raw["evidence_status"], "available")
+        self.assertEqual(current_raw["attachment_sha256"], attached["sha256"])
         with self.assertRaises(HTTPError) as raised:
             self._json_request(
                 f"/api/sources/{source_id}/attachment",

@@ -108,6 +108,7 @@ python3 scripts/smoke_installed.py --build-wheel
 - Receipt and invoice text: structured labels such as Date, Supplier, Total, VAT, and Description.
 - Manual entries: require a reviewer attestation note.
 - Decoded file content is capped at 10 MiB and preserved byte-for-byte under its SHA-256 after commit.
+- Migrated or compatibility-imported records without original bytes cannot be approved until the source file is attached from the review detail panel.
 
 The default database is `data/bokpilot.sqlite3`; attachments, exports, staging,
 and reset backups live beside it. `.env.example` documents process variables,
@@ -121,7 +122,7 @@ See [backup and restore](docs/backup-and-restore.md) for rehearsable commands.
 - `Legacy JSON workspaces require explicit migration`: run the migration command; do not point the server at the JSON file.
 - `Repository requires a dedicated data directory`: choose a private subdirectory rather than a database directly under `/tmp` or `/`.
 - `Workspace revision conflict`: refresh the page and repeat the decision against the current version.
-- Approval blocked: resolve every field in the error summary; production account/rule rows remain disabled until qualified review is recorded.
+- Approval blocked: resolve every field in the error summary. Attach the original file when source evidence is unavailable; production account/rule rows remain disabled until qualified review is recorded.
 - Port already in use: select another loopback port with `--port`; never solve this by binding to a public interface.
 
 ## Uninstall without deleting data

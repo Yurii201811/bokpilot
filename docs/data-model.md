@@ -25,12 +25,13 @@ or credit values. Schema-v1 JSON workspaces containing legacy major-unit
 explicit migration command. Migration writes schema-v2 integer values to
 SQLite and preserves the source JSON.
 
-The main tables are `workspace_metadata`, `sources`, `suggestions`,
-`review_decisions`, `posting_drafts`, `posting_lines`, `attachments`,
-`exports`, `workspace_events`, and `schema_migrations`. Foreign keys,
-uniqueness constraints, and indexes enforce relationships used by the review
-workflow. The top-level `revision` is monotonic and supports optimistic
-concurrency checks for mutations.
+The main tables are `workspace_state`, `company_profile`, `sources`,
+`source_attachments`, `suggestions`, `reviews`, `posting_drafts`,
+`import_batches`, `duplicate_candidates`, `duplicate_decisions`, `matches`,
+`export_batches`, and `workspace_events`. Foreign keys, uniqueness constraints,
+and indexes enforce relationships used by the review workflow. The top-level
+`revision` is monotonic and supports optimistic concurrency checks for
+mutations.
 
 ## Item
 
@@ -46,9 +47,11 @@ Each imported receipt, invoice, bank row, or manual transaction becomes one item
     "counterparty": "Fortnox AB",
     "amount_minor": -24900,
     "currency": "SEK",
-    "source_type": "bank_csv",
+    "source_type": "bank_transaction",
     "source_filename": "seb-export-june.csv",
-    "source_row": 2
+    "source_row": 2,
+    "attachment_sha256": "<64 lowercase hexadecimal characters>",
+    "evidence_status": "available"
   },
   "suggestion": {},
   "status": "needs_review",
@@ -106,6 +109,16 @@ For income, Bokpilot usually suggests:
 - `rejected`: human rejected the item; not exportable.
 
 Exports include approved human-reviewed items only.
+
+## Source evidence
+
+- `available`: original bytes are stored locally under their verified SHA-256.
+- `manual_attested`: no source file exists; approval requires a non-empty reviewer note.
+- `legacy_unavailable`: a migrated or compatibility import lacks original bytes and cannot be approved until an add-only attachment is supplied.
+
+Adding source evidence updates both the structured source row and its
+compatibility snapshot in one transaction, increments the item/workspace
+versions, and never overwrites an existing attachment.
 
 CSV exports name minor-unit columns explicitly (`amount_minor` and
 `vat_amount_minor`). Human-readable SIE-style output renders major units from

@@ -540,10 +540,22 @@ dd {
 }
 
 .reasoning,
+.attachment-form,
 .review-form,
 .journal-lines {
   display: grid;
   gap: 10px;
+}
+
+.attachment-form {
+  padding: 12px;
+  border: 1px solid var(--orange);
+  border-radius: var(--radius);
+  background: var(--orange-soft);
+}
+
+.attachment-form[hidden] {
+  display: none;
 }
 
 .reasoning p {

@@ -45,6 +45,10 @@ Created export batches are immutable local artifacts. JSON omits raw document
 text, evidence bytes, and local artifact paths by default. CSV neutralizes
 user-controlled cells that spreadsheet software could interpret as formulas.
 Downloads verify the stored byte count and SHA-256 before returning content.
+Imported source files and later evidence attachments are stored locally by
+SHA-256 with owner-only permissions. Attachments are add-only. Legacy records
+without original bytes cannot be approved until the source file is attached;
+manually attested records require a reviewer note.
 
 On POSIX systems Bokpilot creates the data directory and database with
 owner-only permissions. This reduces accidental exposure but does not encrypt
@@ -57,13 +61,11 @@ off-device backup policy.
 - Text parsing is simple and intended for demos and structured text.
 - SIE 4I has strict local conformance tests but is not certified until the recorded official-service release gate passes.
 - BAS rules cover only common sample scenarios.
-- The app has no authentication because it is intended for local use.
+- The app has no user accounts or multi-user authorization. It binds only to loopback and uses Host, Origin, content-type, and per-startup session-token checks for the local browser boundary.
 - There is no encrypted document store yet.
 
 ## Future safety work
 
-- Validated SIE 4 output with fixtures.
-- Expanded, user-visible review history.
 - Workspace encryption option.
-- Source document attachment checks.
+- Broader independently reviewed BAS/rule evidence and official SIE service validation.
 - Permissioned integrations that can create drafts but not post or pay without explicit approval.
