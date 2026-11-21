@@ -25,41 +25,47 @@ Treat these as human-review items even when Bokpilot suggests an account:
 
 ## Privacy model
 
-The MVP runs locally and stores data in a JSON workspace file. It does not require external APIs or AI providers.
+The MVP runs locally and stores data in a SQLite database. It does not require external APIs or AI providers.
 
 Default storage:
 
 ```text
-data/workspace.json
+data/bokpilot.sqlite3
 ```
-
-The browser asks before replacing or resetting a workspace that contains data. It then sends the decision in the custom `X-Bokpilot-Confirmation` header. The server requires that header when data would be erased; putting the public confirmation phrase in a request body is not sufficient. Browsers cannot attach the custom header to a cross-origin simple POST, and this server does not enable cross-origin access.
-
-All POST mutations share one per-server lock. The confirmation check and reset therefore complete without another import or review slipping between them on the same server. Sample replacement constructs the complete new workspace in memory and saves it once, so a reported save failure keeps the previous workspace file.
-
-Each save is written and synced to a temporary file beside the workspace before an atomic runtime replacement. If JSON serialization, temporary writing, or replacement reports a failure, Bokpilot keeps the previous `workspace.json` and removes the incomplete temporary file. This is a process-level integrity safeguard, not a power-loss durability guarantee or a backup; keep separate backups for recovery from abrupt shutdown, deletion, disk failure, or an already-corrupt file.
-
-These controls are not authentication. Bokpilot binds to `127.0.0.1` by default and prints a warning for non-loopback hosts. Do not expose the MVP server to an untrusted network.
 
 Recommended handling:
 
 - Do not commit real receipts or invoices.
 - Keep workspace files out of public repositories.
+- Keep backup archives out of public repositories too.
 - Remove or redact personal data before sharing issue reports.
 - If optional OCR or AI providers are added later, make them opt-in and document what leaves the machine.
+
+Created export batches are immutable local artifacts. JSON omits raw document
+text, evidence bytes, and local artifact paths by default. CSV neutralizes
+user-controlled cells that spreadsheet software could interpret as formulas.
+Downloads verify the stored byte count and SHA-256 before returning content.
+Imported source files and later evidence attachments are stored locally by
+SHA-256 with owner-only permissions. Attachments are add-only. Legacy records
+without original bytes cannot be approved until the source file is attached;
+manually attested records require a reviewer note.
+
+On POSIX systems Bokpilot creates the data directory and database with
+owner-only permissions. This reduces accidental exposure but does not encrypt
+the database. Backup and restore commands verify archive paths and content
+hashes; they are operational safeguards, not a substitute for an encrypted
+off-device backup policy.
 
 ## Current limitations
 
 - Text parsing is simple and intended for demos and structured text.
-- The SIE-style export is not a certified SIE implementation.
+- SIE 4I has strict local conformance tests but is not certified until the recorded official-service release gate passes.
 - BAS rules cover only common sample scenarios.
-- The app has no authentication because it is intended for loopback-only local use.
+- The app has no user accounts or multi-user authorization. It binds only to loopback and uses Host, Origin, content-type, and per-startup session-token checks for the local browser boundary.
 - There is no encrypted document store yet.
 
 ## Future safety work
 
-- Validated SIE 4 output with fixtures.
-- Append-only review history.
 - Workspace encryption option.
-- Source document attachment checks.
+- Broader independently reviewed BAS/rule evidence and official SIE service validation.
 - Permissioned integrations that can create drafts but not post or pay without explicit approval.

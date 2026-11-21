@@ -1,0 +1,152 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from bokpilot.serialization import (
+    decode_journal_line,
+    decode_source,
+    decode_source_vat,
+    decode_suggestion_vat,
+    encode_journal_line,
+    encode_source,
+    encode_source_vat,
+    encode_suggestion_vat,
+)
+from bokpilot.store import WorkspaceStore
+from bokpilot.domain import VatTreatment
+from bokpilot.migrations import migrate_json_workspace
+from tests.helpers import source_record
+
+
+FIXTURE = Path(__file__).parent / "fixtures" / "workspaces" / "v1-workspace.json"
+
+
+class SerializationTest(unittest.TestCase):
+    def test_source_accounting_evidence_round_trips_separately(self):
+        record = source_record(
+            "Evidence",
+            -10_000,
+            source_vat=VatTreatment.RATE_25,
+            source_vat_minor=1_900,
+            matched_source_id="invoice-1",
+            high_risk=True,
+        )
+
+        encoded = encode_source(record)
+        decoded = decode_source(encoded)
+
+        self.assertEqual(encoded["vat_treatment"], "25")
+        self.assertEqual(encoded["vat_amount_minor"], 1_900)
+        self.assertEqual(decoded.source_vat, VatTreatment.RATE_25)
+        self.assertEqual(decoded.source_vat_minor, 1_900)
+        self.assertEqual(decoded.matched_source_id, "invoice-1")
+        self.assertTrue(decoded.high_risk)
+
+    def test_decode_source_accepts_legacy_major_amount(self):
+        workspace = json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+        source = decode_source(workspace["items"][0]["raw"])
+
+        self.assertEqual(source.amount.minor, -24900)
+        self.assertEqual(source.amount.currency, "SEK")
+
+    def test_encode_source_writes_only_schema_v2_amount(self):
+        workspace = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        legacy = workspace["items"][0]["raw"]
+
+        encoded = encode_source(decode_source(legacy), template=legacy)
+
+        self.assertEqual(encoded["amount_minor"], -24900)
+        self.assertEqual(encoded["currency"], "SEK")
+        self.assertNotIn("amount", encoded)
+
+    def test_source_vat_codec_upgrades_legacy_major_amount(self):
+        workspace = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        legacy = workspace["items"][0]["raw"]
+
+        encoded = encode_source_vat(decode_source_vat(legacy), template=legacy)
+
+        self.assertEqual(encoded["vat_amount_minor"], 4980)
+        self.assertNotIn("vat_amount", encoded)
+
+    def test_suggestion_vat_codec_upgrades_legacy_major_amount(self):
+        workspace = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        legacy = workspace["items"][0]["suggestion"]
+
+        encoded = encode_suggestion_vat(decode_suggestion_vat(legacy), template=legacy)
+
+        self.assertEqual(encoded["vat_amount_minor"], 4980)
+        self.assertNotIn("vat_amount", encoded)
+
+    def test_journal_codec_upgrades_legacy_major_amounts(self):
+        workspace = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        legacy = workspace["items"][0]["suggestion"]["journal_lines"][0]
+
+        line = decode_journal_line(legacy)
+        encoded = encode_journal_line(line)
+
+        self.assertEqual(line.debit_minor, 19920)
+        self.assertEqual(line.credit_minor, 0)
+        self.assertEqual(encoded["debit_minor"], 19920)
+        self.assertEqual(encoded["credit_minor"], 0)
+        self.assertNotIn("debit", encoded)
+        self.assertNotIn("credit", encoded)
+
+    def test_store_requires_explicit_v1_migration_and_loads_v2_money(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "workspace.json"
+            destination = Path(directory) / "data" / "bokpilot.sqlite3"
+            source.write_bytes(FIXTURE.read_bytes())
+            with self.assertRaisesRegex(ValueError, "explicit migration"):
+                WorkspaceStore(source)
+            migrate_json_workspace(source, destination)
+            store = WorkspaceStore(destination)
+            workspace = store.load()
+
+        self.assertEqual(workspace["metadata"]["schema_version"], 2)
+        self.assertEqual(workspace["revision"], 1)
+        raw = workspace["items"][0]["raw"]
+        suggestion = workspace["items"][0]["suggestion"]
+        line = suggestion["journal_lines"][0]
+        self.assertEqual(raw["amount_minor"], -24900)
+        self.assertEqual(raw["vat_amount_minor"], 4980)
+        self.assertEqual(suggestion["vat_amount_minor"], 4980)
+        self.assertEqual(line["debit_minor"], 19920)
+        self.assertEqual(line["credit_minor"], 0)
+        self.assertEqual(
+            [
+                (entry["debit_minor"], entry["credit_minor"])
+                for entry in suggestion["journal_lines"]
+            ],
+            [(19920, 0), (4980, 0), (0, 24900)],
+        )
+        self.assertNotIn("amount", raw)
+        self.assertNotIn("vat_amount", raw)
+        self.assertNotIn("vat_amount", suggestion)
+        self.assertNotIn("debit", suggestion["journal_lines"][0])
+        self.assertNotIn("credit", suggestion["journal_lines"][0])
+
+    def test_codecs_reject_bool_and_float_schema_v2_minor_fields(self):
+        for invalid in (True, 12.5):
+            cases = (
+                ("source", decode_source, {"amount_minor": invalid}),
+                ("source_vat", decode_source_vat, {"vat_amount_minor": invalid}),
+                ("suggestion_vat", decode_suggestion_vat, {"vat_amount_minor": invalid}),
+                ("journal_debit", decode_journal_line, {"debit_minor": invalid}),
+                ("journal_credit", decode_journal_line, {"credit_minor": invalid}),
+            )
+            for name, decoder, payload in cases:
+                with self.subTest(name=name, invalid=invalid), self.assertRaises((TypeError, ValueError)):
+                    decoder(payload)
+
+    def test_optional_vat_distinguishes_absent_from_explicit_zero(self):
+        self.assertIsNone(decode_source_vat({}))
+        self.assertEqual(decode_source_vat({"vat_amount": 0.0}).minor, 0)
+        self.assertEqual(decode_suggestion_vat({"vat_amount_minor": 0}).minor, 0)
+        with self.assertRaises(TypeError):
+            decode_source_vat({"vat_amount_minor": False, "vat_amount": 10.0})
+
+
+if __name__ == "__main__":
+    unittest.main()

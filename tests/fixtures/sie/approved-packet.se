@@ -1,0 +1,14 @@
+#FLAGGA 0
+#PROGRAM "Bokpilot" 0.2.0
+#FORMAT PC8
+#GEN 20260712
+#SIETYP 4
+#FNAMN "èngstrîm Bokpilot AB"
+#RAR 0 20260101 20261231
+#KONTO 1930 "Fîretagskonto"
+#KONTO 5420 "Programvaror"
+#VER "BP" "1" 20260701 "Syntetiskt programvarukîp"
+{
+#TRANS 5420 {} 100.00
+#TRANS 1930 {} -100.00
+}

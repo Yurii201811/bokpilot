@@ -1,0 +1,593 @@
+const state = {
+  workspace: null,
+  selectedId: null,
+  attachmentSourceId: null,
+  statusFilter: "all",
+  importPreview: null,
+  token: null,
+  search: "",
+  riskFilter: "all",
+  kindFilter: "all",
+  confidenceFilter: "all",
+  unresolvedFilter: "all",
+  sortKey: "date",
+  sortDirection: 1,
+};
+
+const formatter = new Intl.NumberFormat("sv-SE", {
+  style: "currency",
+  currency: "SEK",
+});
+
+const percentFormatter = new Intl.NumberFormat("sv-SE", {
+  style: "percent",
+  maximumFractionDigits: 0,
+});
+
+const els = {
+  loadSample: document.querySelector("#load-sample"),
+  reset: document.querySelector("#reset"),
+  fileForm: document.querySelector("#file-form"),
+  fileInput: document.querySelector("#file-input"),
+  importKind: document.querySelector("#import-kind"),
+  importPreview: document.querySelector("#import-preview"),
+  importPreviewSummary: document.querySelector("#import-preview-summary"),
+  importPreviewIssues: document.querySelector("#import-preview-issues"),
+  commitImport: document.querySelector("#commit-import"),
+  sourceAttachmentForm: document.querySelector("#source-attachment-form"),
+  sourceAttachmentInput: document.querySelector("#source-attachment-input"),
+  manualForm: document.querySelector("#manual-form"),
+  manualDate: document.querySelector("#manual-date"),
+  statusFilter: document.querySelector("#status-filter"),
+  searchFilter: document.querySelector("#search-filter"),
+  riskFilter: document.querySelector("#risk-filter"),
+  kindFilter: document.querySelector("#kind-filter"),
+  confidenceFilter: document.querySelector("#confidence-filter"),
+  unresolvedFilter: document.querySelector("#unresolved-filter"),
+  table: document.querySelector("#items-table"),
+  empty: document.querySelector("#detail-empty"),
+  detail: document.querySelector("#detail-content"),
+  exportPreview: document.querySelector("#export-preview"),
+  toast: document.querySelector("#toast"),
+  reviewForm: document.querySelector("#review-form"),
+  profileForm: document.querySelector("#profile-form"),
+  errorSummary: document.querySelector("#error-summary"),
+};
+
+els.manualDate.valueAsDate = new Date();
+
+async function request(path, options = {}) {
+  const method = options.method || "GET";
+  const mutationHeaders = method === "GET" ? {} : { "X-Bokpilot-Token": state.token || "" };
+  const response = await fetch(path, {
+    headers: { "Content-Type": "application/json", ...mutationHeaders, ...(options.headers || {}) },
+    ...options,
+  });
+  const contentType = response.headers.get("Content-Type") || "";
+  const payload = contentType.includes("application/json")
+    ? await response.json()
+    : await response.text();
+  if (!response.ok) {
+    const message = payload?.error?.message || payload?.error || payload || "Request failed";
+    showError(message, payload?.error?.fields || {});
+    throw new Error(message);
+  }
+  els.errorSummary.hidden = true;
+  return payload;
+}
+
+function showError(message, fields = {}) {
+  const details = Object.values(fields);
+  els.errorSummary.textContent = [message, ...details].join(" ");
+  els.errorSummary.hidden = false;
+  els.errorSummary.focus?.();
+}
+
+async function refresh() {
+  state.workspace = await request("/api/workspace");
+  if (!state.selectedId && state.workspace.items.length > 0) {
+    state.selectedId = state.workspace.items[0].id;
+  }
+  render();
+  populateProfile();
+  document.querySelector("#demo-banner").hidden = !state.workspace.demo_mode;
+}
+
+function populateProfile() {
+  const profile = state.workspace?.company_profile;
+  if (!profile) return;
+  for (const [key, value] of Object.entries(profile)) {
+    const control = els.profileForm.elements.namedItem(key);
+    if (control && value != null) control.value = value;
+  }
+}
+
+function render() {
+  renderMetrics();
+  renderTable();
+  renderDetail();
+}
+
+function renderMetrics() {
+  const summary = state.workspace?.summary || {};
+  document.querySelector("#metric-pending").textContent = summary.total_items || 0;
+  document.querySelector("#metric-review").textContent = summary.needs_review || 0;
+  document.querySelector("#metric-approved").textContent = summary.approved || 0;
+  document.querySelector("#metric-export").textContent = summary.export_ready || 0;
+}
+
+function renderTable() {
+  const items = filteredItems();
+  els.table.replaceChildren(
+    ...items.map((item) => {
+      const raw = item.raw;
+      const suggestion = item.suggestion;
+      const row = document.createElement("tr");
+      row.classList.toggle("selected", item.id === state.selectedId);
+      row.innerHTML = `
+        <td data-label="Item"><button class="button review-item" type="button">Review ${escapeHtml(item.id)}</button></td>
+        <td data-label="Date">${escapeHtml(raw.date)}</td>
+        <td data-label="Description">${escapeHtml(raw.description)}</td>
+        <td data-label="Amount" class="${Number(raw.amount_minor) < 0 ? "amount-negative" : "amount-positive"}">${formatter.format(Number(raw.amount_minor) / 100)}</td>
+        <td data-label="BAS">${escapeHtml(suggestion.bas_account)} ${escapeHtml(suggestion.bas_account_name)}</td>
+        <td data-label="VAT">${escapeHtml(String(suggestion.vat_rate))}%</td>
+        <td data-label="Confidence"><span class="confidence ${Number(suggestion.confidence) < 0.7 ? "low" : ""}">${percentFormatter.format(Number(suggestion.confidence))}</span></td>
+        <td data-label="Status"><span class="status-pill ${escapeHtml(item.status)}">${statusLabel(item.status)}</span></td>
+      `;
+      row.querySelector(".review-item").addEventListener("click", () => selectItem(item.id));
+      return row;
+    })
+  );
+}
+
+function renderDetail() {
+  const item = selectedItem();
+  els.empty.hidden = Boolean(item);
+  els.detail.hidden = !item;
+  if (!item) {
+    els.sourceAttachmentForm.reset();
+    state.attachmentSourceId = null;
+    return;
+  }
+  if (state.attachmentSourceId !== item.id) {
+    els.sourceAttachmentForm.reset();
+    state.attachmentSourceId = item.id;
+  }
+
+  const raw = item.raw;
+  const suggestion = item.suggestion;
+  document.querySelector("#detail-id").textContent = item.id;
+  document.querySelector("#detail-title").textContent = raw.description;
+  document.querySelector("#detail-status").textContent = statusLabel(item.status);
+  document.querySelector("#detail-status").className = `status-pill ${item.status}`;
+  document.querySelector("#detail-amount").textContent = formatter.format(Number(raw.amount_minor) / 100);
+  document.querySelector("#detail-bas").textContent = `${suggestion.bas_account} ${suggestion.bas_account_name}`;
+  document.querySelector("#detail-vat").textContent = `${suggestion.vat_rate}% (${formatter.format(Number(suggestion.vat_amount_minor) / 100)})`;
+  document.querySelector("#detail-confidence").textContent = percentFormatter.format(Number(suggestion.confidence));
+  document.querySelector("#detail-explanation").textContent = suggestion.explanation;
+  document.querySelector("#review-account").value = suggestion.bas_account;
+  document.querySelector("#review-vat").value = String(Number(suggestion.vat_rate));
+  document.querySelector("#review-note").value = item.reviewer_note || "";
+  const needsSourceAttachment = raw.evidence_status === "legacy_unavailable";
+  const evidence = raw.evidence_status === "available"
+    ? `File ${raw.source_filename || "source"}, row ${raw.source_row || "n/a"}, SHA-256 ${(raw.attachment_sha256 || "").slice(0, 12)}…`
+    : needsSourceAttachment
+      ? "Legacy source bytes are unavailable; approval is blocked until the original source file is attached."
+      : "Manual entry supported by reviewer attestation.";
+  document.querySelector("#source-provenance").textContent = evidence;
+  els.sourceAttachmentForm.hidden = !needsSourceAttachment;
+  els.sourceAttachmentInput.required = needsSourceAttachment;
+  if (!needsSourceAttachment) els.sourceAttachmentForm.reset();
+  document.querySelector("#extracted-fields").replaceChildren(
+    ...Object.entries(raw.extracted || {}).map(([key, value]) => {
+      const wrapper = document.createElement("div");
+      const term = document.createElement("dt");
+      const description = document.createElement("dd");
+      term.textContent = key;
+      description.textContent = String(value);
+      wrapper.append(term, description);
+      return wrapper;
+    })
+  );
+
+  const riskList = document.querySelector("#risk-list");
+  riskList.replaceChildren(
+    ...(suggestion.risk_flags || []).map((flag) => {
+      const li = document.createElement("li");
+      li.textContent = flag;
+      return li;
+    })
+  );
+
+  const lines = document.querySelector("#journal-lines");
+  lines.replaceChildren(
+    ...suggestion.journal_lines.map((line) => {
+      const div = document.createElement("div");
+      div.className = "journal-line";
+      div.innerHTML = `
+        <div>
+          <strong>${escapeHtml(line.account)} ${escapeHtml(line.account_name)}</strong>
+          <span>${Number(line.debit_minor) > 0 ? "Debit" : "Credit"}</span>
+        </div>
+        <span>${Number(line.debit_minor) > 0 ? formatter.format(Number(line.debit_minor) / 100) : ""}</span>
+        <span>${Number(line.credit_minor) > 0 ? formatter.format(Number(line.credit_minor) / 100) : ""}</span>
+      `;
+      return div;
+    })
+  );
+  renderMatches(item.id).catch((error) => {
+    document.querySelector("#match-list").textContent = error.message;
+  });
+  renderReviewHistory(item.id).catch((error) => {
+    document.querySelector("#review-history").textContent = error.message;
+  });
+}
+
+async function renderReviewHistory(sourceId) {
+  const payload = await request(`/api/sources/${sourceId}/reviews`);
+  if (state.selectedId !== sourceId) return;
+  const container = document.querySelector("#review-history");
+  if (payload.reviews.length === 0) {
+    container.textContent = "No decisions recorded yet.";
+    return;
+  }
+  container.replaceChildren(...payload.reviews.map((review) => {
+    const entry = document.createElement("p");
+    entry.textContent = `${review.action} · version ${review.prior_version} · ${review.created_at} · ${review.reviewer_note || "No note"}`;
+    return entry;
+  }));
+}
+
+async function renderMatches(sourceId) {
+  const payload = await request(`/api/sources/${sourceId}/matches`);
+  if (state.selectedId !== sourceId) return;
+  const list = document.querySelector("#match-list");
+  if (payload.matches.length === 0) {
+    list.textContent = "No same-currency candidates within the matching window.";
+    return;
+  }
+  list.replaceChildren(
+    ...payload.matches.map((match) => {
+      const row = document.createElement("div");
+      row.className = "journal-line";
+      const explanation = document.createElement("div");
+      const title = document.createElement("strong");
+      title.textContent = `${match.matched_source_id} · score ${match.score}`;
+      const reasons = document.createElement("span");
+      reasons.textContent = match.reasons.join("; ");
+      explanation.append(title, reasons);
+      const actions = document.createElement("div");
+      if (match.status === "confirmed" || match.status === "rejected") {
+        actions.textContent = match.status;
+      } else {
+        const confirm = document.createElement("button");
+        confirm.className = "button success";
+        confirm.type = "button";
+        confirm.textContent = "Confirm";
+        confirm.addEventListener("click", () => decideMatch(match, "confirmed"));
+        const reject = document.createElement("button");
+        reject.className = "button ghost";
+        reject.type = "button";
+        reject.textContent = "Reject";
+        reject.addEventListener("click", () => decideMatch(match, "rejected"));
+        actions.append(confirm, reject);
+      }
+      row.append(explanation, actions);
+      return row;
+    })
+  );
+}
+
+async function decideMatch(match, decision) {
+  await request(`/api/matches/${match.id}/decision`, {
+    method: "POST",
+    body: JSON.stringify({
+      source_id: match.source_id,
+      matched_source_id: match.matched_source_id,
+      decision,
+      matched_minor: decision === "confirmed" ? match.suggested_minor : 0,
+      expected_version: match.version,
+    }),
+  });
+  toast(`Match ${decision}.`);
+  await renderMatches(match.source_id);
+}
+
+function filteredItems() {
+  return (state.workspace?.items || []).filter((item) => {
+    const flags = item.suggestion?.risk_flags || [];
+    const search = `${item.id} ${item.raw?.description || ""} ${item.raw?.counterparty || ""}`.toLowerCase();
+    return (state.statusFilter === "all" || item.status === state.statusFilter)
+      && (state.kindFilter === "all" || item.raw?.source_type === state.kindFilter)
+      && (state.riskFilter === "all" || (state.riskFilter === "flagged" ? flags.length > 0 : flags.length === 0))
+      && (state.confidenceFilter === "all" || (state.confidenceFilter === "low" ? Number(item.suggestion?.confidence) < 0.7 : Number(item.suggestion?.confidence) >= 0.7))
+      && (state.unresolvedFilter === "all" || (state.unresolvedFilter === "unresolved" ? item.unresolved_duplicates > 0 : item.unresolved_duplicates === 0))
+      && (!state.search || search.includes(state.search));
+  }).sort((left, right) => {
+    const leftValue = state.sortKey === "amount" ? Number(left.raw.amount_minor) : String(left.raw.date);
+    const rightValue = state.sortKey === "amount" ? Number(right.raw.amount_minor) : String(right.raw.date);
+    return (leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0) * state.sortDirection;
+  });
+}
+
+function selectedItem() {
+  return (state.workspace?.items || []).find((item) => item.id === state.selectedId);
+}
+
+function selectItem(itemId) {
+  state.selectedId = itemId;
+  render();
+}
+
+function statusLabel(status) {
+  return {
+    needs_review: "Needs review",
+    approved: "Approved",
+    rejected: "Rejected",
+  }[status] || status;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function toast(message) {
+  els.toast.textContent = message;
+  els.toast.classList.add("show");
+  window.setTimeout(() => els.toast.classList.remove("show"), 2600);
+}
+
+els.loadSample.addEventListener("click", async () => {
+  state.workspace = await request("/api/load-sample", {
+    method: "POST",
+    body: JSON.stringify({ expected_workspace_revision: state.workspace.revision }),
+  });
+  state.selectedId = state.workspace.items[0]?.id || null;
+  toast("Sample Swedish bookkeeping scenarios loaded.");
+  render();
+});
+
+els.reset.addEventListener("click", async () => {
+  if (!window.confirm("Reset this workspace? Bokpilot will create a verified backup first.")) return;
+  state.workspace = await request("/api/reset", {
+    method: "POST",
+    body: JSON.stringify({ confirmation: "RESET", expected_revision: state.workspace.revision }),
+  });
+  state.selectedId = null;
+  els.exportPreview.textContent = "Approve at least one item to preview an export.";
+  toast(`Workspace reset. Backup SHA-256: ${state.workspace.backup.sha256.slice(0, 12)}…`);
+  render();
+});
+
+els.statusFilter.addEventListener("change", () => {
+  state.statusFilter = els.statusFilter.value;
+  renderTable();
+});
+els.searchFilter.addEventListener("input", () => {
+  state.search = els.searchFilter.value.trim().toLowerCase();
+  renderTable();
+});
+els.riskFilter.addEventListener("change", () => {
+  state.riskFilter = els.riskFilter.value;
+  renderTable();
+});
+els.kindFilter.addEventListener("change", () => {
+  state.kindFilter = els.kindFilter.value;
+  renderTable();
+});
+els.confidenceFilter.addEventListener("change", () => {
+  state.confidenceFilter = els.confidenceFilter.value;
+  renderTable();
+});
+els.unresolvedFilter.addEventListener("change", () => {
+  state.unresolvedFilter = els.unresolvedFilter.value;
+  renderTable();
+});
+for (const [id, key] of [["#sort-date", "date"], ["#sort-amount", "amount"]]) {
+  document.querySelector(id).addEventListener("click", () => {
+    state.sortDirection = state.sortKey === key ? -state.sortDirection : 1;
+    state.sortKey = key;
+    renderTable();
+  });
+}
+
+function moveSelection(offset) {
+  const items = filteredItems();
+  const index = Math.max(0, items.findIndex((item) => item.id === state.selectedId));
+  const target = items[index + offset];
+  if (target) selectItem(target.id);
+}
+document.querySelector("#previous-item").addEventListener("click", () => moveSelection(-1));
+document.querySelector("#next-item").addEventListener("click", () => moveSelection(1));
+
+els.profileForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(els.profileForm).entries());
+  data.expected_workspace_revision = state.workspace.revision;
+  const result = await request("/api/profile", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+  state.workspace.revision = result.workspace_revision;
+  state.workspace.company_profile = result.company_profile;
+  toast("Company profile saved.");
+});
+
+els.fileForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const file = els.fileInput.files[0];
+  if (!file) {
+    toast("Choose a file first.");
+    return;
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const mediaType = file.type || (file.name.toLowerCase().endsWith(".csv") ? "text/csv" : "text/plain");
+  state.importPreview = await request("/api/imports/preview", {
+    method: "POST",
+    body: JSON.stringify({
+      filename: file.name,
+      kind: els.importKind.value,
+      media_type: `${mediaType}; charset=utf-8`,
+      content_base64: bytesToBase64(bytes),
+      locale: "auto",
+    }),
+  });
+  const candidates = state.importPreview.candidates.length;
+  const issues = state.importPreview.issues.length;
+  const mapped = Object.entries(state.importPreview.column_mapping || {}).map(([field, column]) => `${field}→${column}`).join(", ");
+  els.importPreviewSummary.textContent = `${candidates} valid candidate${candidates === 1 ? "" : "s"}; ${issues} issue${issues === 1 ? "" : "s"}. SHA-256 ${state.importPreview.source_sha256}. ${mapped ? `Detected: ${mapped}.` : ""}`;
+  els.importPreviewIssues.replaceChildren(
+    ...state.importPreview.issues.map((issue) => {
+      const item = document.createElement("li");
+      item.textContent = `${issue.source_row ? `Row ${issue.source_row}: ` : ""}${issue.message}`;
+      return item;
+    })
+  );
+  els.importPreview.hidden = false;
+  els.commitImport.disabled = candidates === 0 || state.importPreview.issues.some((issue) => issue.code === "mapping_required");
+  toast(`${file.name} previewed without creating review items.`);
+});
+
+els.sourceAttachmentForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const item = selectedItem();
+  const file = els.sourceAttachmentInput.files[0];
+  if (!item || item.raw.evidence_status !== "legacy_unavailable") {
+    toast("This item no longer needs source evidence.");
+    return;
+  }
+  if (!file) {
+    toast("Choose the original source file first.");
+    return;
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let result;
+  try {
+    result = await request(`/api/sources/${item.id}/attachment`, {
+      method: "POST",
+      body: JSON.stringify({
+        filename: file.name,
+        media_type: file.type || "application/octet-stream",
+        content_base64: bytesToBase64(bytes),
+        expected_version: item.version,
+      }),
+    });
+  } catch (_error) {
+    return;
+  }
+  await refresh();
+  toast(`Source evidence attached · SHA-256 ${result.sha256.slice(0, 12)}…`);
+});
+
+els.commitImport.addEventListener("click", async () => {
+  if (!state.importPreview) return;
+  const result = await request(`/api/imports/${state.importPreview.batch_id}/commit`, {
+    method: "POST",
+    body: JSON.stringify({ expected_workspace_revision: state.importPreview.workspace_revision }),
+  });
+  await refresh();
+  state.selectedId = result.created_ids.at(-1) || result.existing_ids.at(-1) || state.selectedId;
+  state.importPreview = null;
+  els.importPreview.hidden = true;
+  els.fileForm.reset();
+  toast(`${result.created_ids.length} new review item${result.created_ids.length === 1 ? "" : "s"} committed.`);
+  render();
+});
+
+els.manualForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(els.manualForm).entries());
+  state.workspace = await request("/api/import/manual", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+  state.selectedId = state.workspace.items.at(-1)?.id || state.selectedId;
+  els.manualForm.reset();
+  els.manualDate.valueAsDate = new Date();
+  toast("Manual transaction added.");
+  render();
+});
+
+els.reviewForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submitter = event.submitter;
+  const item = selectedItem();
+  if (!item) return;
+  const data = Object.fromEntries(new FormData(els.reviewForm).entries());
+  data.status = submitter?.dataset.status || "needs_review";
+  data.nature = Number(item.raw.amount_minor) < 0 ? "expense" : "revenue";
+  data.expected_version = item.version;
+  data.risk_acknowledged = Boolean(data.risk_acknowledged);
+  try {
+    await request(`/api/sources/${item.id}/review`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  } catch (_error) {
+    return;
+  }
+  await refresh();
+  const remaining = filteredItems();
+  const next = remaining.find((value) => value.status === "needs_review");
+  state.selectedId = next?.id || item.id;
+  toast(`${item.id} marked ${statusLabel(data.status).toLowerCase()}.`);
+  render();
+});
+
+document.querySelectorAll("[data-export]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const format = button.dataset.export === "sie" ? "sie4i" : button.dataset.export;
+    const reviewIds = (state.workspace.items || [])
+      .filter((item) => item.status === "approved" && item.review_id)
+      .map((item) => item.review_id);
+    const batch = await request("/api/exports", {
+      method: "POST",
+      body: JSON.stringify({
+        format,
+        review_ids: reviewIds,
+        expected_workspace_revision: state.workspace.revision,
+      }),
+    });
+    state.workspace.revision = batch.workspace_revision;
+    const response = await fetch(`/api/exports/${batch.id}/download`);
+    if (!response.ok) throw new Error("Export download failed.");
+    const blob = await response.blob();
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = batch.filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    els.exportPreview.textContent = format === "sie4i"
+      ? `${batch.included_count} items · CP437 SIE 4I · SHA-256 ${batch.sha256}`
+      : `${await blob.text()}\nSHA-256 ${batch.sha256}`;
+    toast(`${batch.included_count} approved item${batch.included_count === 1 ? "" : "s"} exported.`);
+  });
+});
+
+async function initialize() {
+  const session = await request("/api/session");
+  state.token = session.token;
+  const year = new Date().getFullYear();
+  document.querySelector("#profile-start").value ||= `${year}-01-01`;
+  document.querySelector("#profile-end").value ||= `${year}-12-31`;
+  await refresh();
+}
+
+initialize().catch((error) => {
+  els.exportPreview.textContent = error.message;
+  toast(error.message);
+});
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}

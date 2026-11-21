@@ -8,19 +8,20 @@ Bokpilot is a dependency-light local web app.
 Browser UI
   -> Python stdlib HTTP server
   -> parsers/rules/store/export modules
-  -> local JSON workspace file
+  -> repository transactions
+  -> local SQLite database
 ```
 
 No external service is required for the demo. The default workspace file is:
 
 ```text
-data/workspace.json
+data/bokpilot.sqlite3
 ```
 
 Override it with:
 
 ```bash
-BOKPILOT_DATA_PATH=/tmp/bokpilot-workspace.json python3 -m bokpilot --port 8765
+BOKPILOT_DATA_PATH=/tmp/bokpilot.sqlite3 python3 -m bokpilot --port 8765
 ```
 
 ## Backend modules
@@ -28,8 +29,11 @@ BOKPILOT_DATA_PATH=/tmp/bokpilot-workspace.json python3 -m bokpilot --port 8765
 - `bokpilot.server`: static web server and JSON API.
 - `bokpilot.parsers`: bank CSV, receipt/invoice text, and manual transaction parsing.
 - `bokpilot.rules`: deterministic BAS/VAT classification and journal-line generation.
-- `bokpilot.store`: local JSON persistence and human review status.
-- `bokpilot.exports`: JSON, CSV, and SIE-style draft export.
+- `bokpilot.store`: compatibility workspace API and human review operations.
+- `bokpilot.repository`: schema-v2 SQLite persistence, transactions, revisions, and query paging.
+- `bokpilot.migrations`: explicit, idempotent migration from legacy JSON workspaces.
+- `bokpilot.backups`: integrity-checked backup creation and atomic restore.
+- `bokpilot.exports`: immutable privacy-safe JSON/CSV and SIE 4I export batches.
 - `bokpilot.sample_data`: sample workspace loader.
 - `bokpilot.models`: serializable money, suggestion, and journal-line structures.
 
@@ -43,33 +47,49 @@ BOKPILOT_DATA_PATH=/tmp/bokpilot-workspace.json python3 -m bokpilot --port 8765
 
 | Route | Method | Purpose |
 | --- | --- | --- |
+| `/api/session` | GET | Return the startup session token, version, and current workspace revision. |
 | `/api/workspace` | GET | Load current workspace and summary metrics. |
-| `/api/load-sample` | POST | Import sample Swedish scenarios. Replacing a non-empty workspace requires `X-Bokpilot-Confirmation: replace-with-samples`. |
-| `/api/reset` | POST | Clear the local workspace. Resetting a non-empty workspace requires `X-Bokpilot-Confirmation: reset-workspace`. |
-| `/api/import/bank-csv` | POST | Import CSV text. |
-| `/api/import/document` | POST | Import receipt/invoice text. |
-| `/api/import/manual` | POST | Add one manual transaction. |
-| `/api/items/{id}/review` | POST | Approve, reject, keep open, or override account/VAT. |
-| `/api/export/json` | GET | Export approved human-reviewed items as JSON. |
-| `/api/export/csv` | GET | Export approved human-reviewed summary CSV. |
-| `/api/export/sie` | GET | Export approved human-reviewed SIE-style draft. |
+| `/api/profile` | POST | Save a revision-checked company profile. |
+| `/api/load-sample` | POST | Import synthetic scenarios into an empty workspace. |
+| `/api/reset` | POST | Create a verified backup, then clear the workspace after exact confirmation. |
+| `/api/imports/preview` | POST | Validate and stage original file bytes without creating review items. |
+| `/api/imports/{batch_id}` | GET | Read an immutable import preview. |
+| `/api/imports/{batch_id}/commit` | POST | Commit a revision-checked preview idempotently. |
+| `/api/sources/{id}/attachment` | POST | Add verified source evidence when a migrated item lacks original bytes. |
+| `/api/sources/{id}/review` | POST | Approve, reject, reopen, or override account/VAT with an expected item version. |
+| `/api/sources/{id}/reviews` | GET | Read immutable review history. |
+| `/api/sources/{id}/matches` | GET | Read explainable same-currency match suggestions. |
+| `/api/matches/{id}/decision` | POST | Confirm or reject a suggested match. |
+| `/api/sources/{id}/duplicate-decision` | POST | Resolve a duplicate candidate with a reviewer note. |
+| `/api/exports` | POST | Create an immutable approved-review JSON, CSV, or SIE 4I batch. |
+| `/api/exports/{id}/download` | GET | Verify and download the stored artifact bytes. |
+
+The direct `/api/import/bank-csv`, `/api/import/document`, and
+`/api/import/manual` routes remain for compatibility with v0.1 clients. File
+imports through those routes do not possess preserved original bytes and are
+therefore marked `legacy_unavailable`; approval stays blocked until evidence
+is attached. New file-import clients must use preview and commit.
 
 ## Safety controls
 
 - Every suggestion has `review_required: true`.
 - New items start as `needs_review`.
 - Export functions include only `status == approved` and `human_reviewed == true`.
-- Destructive sample replacement and workspace reset are rejected unless a non-empty workspace receives the matching custom confirmation header. A body token alone is never sufficient, so a cross-origin simple POST cannot erase data.
-- One per-server lock serializes every POST mutation, keeping the destructive check and reset atomic relative to imports and reviews handled by that server.
-- Sample replacement builds the complete sample workspace in memory and performs one save, so a failed final save leaves the previous workspace file intact.
-- Workspace persistence writes and syncs complete JSON to a temporary file in the data directory, then atomically replaces `workspace.json` for runtime readers. A reported serialization, temporary-write, or replacement failure leaves the previous workspace intact and removes the temporary file. This does not claim durability across abrupt power or operating-system failure.
+- `legacy_unavailable` source evidence blocks approval; attaching verified bytes clears only that gate and advances the item version.
+- `manual_attested` evidence requires a non-empty reviewer note.
 - The UI displays the disclaimer and does not offer posting, filing, payment, or live accounting-system mutation.
 - Risk flags are attached to low-confidence or context-dependent suggestions.
 
-The server binds to `127.0.0.1` by default and has no authentication. A
-non-loopback `--host` prints a warning; the confirmation header is a browser
-CSRF guard, not authorization for network exposure.
+## Storage and concurrency
 
-## Why no database framework yet
+SQLite is used through Python's standard library, so the app remains dependency-light and needs no database server. Application mutations run in explicit transactions. Each committed mutation advances a monotonic workspace revision; stale writes are rejected instead of silently overwriting newer review work.
 
-The MVP is a public, easy-to-run demo. A JSON workspace is transparent, inspectable, and enough for import-review-export. A later multi-user or production deployment should move to SQLite/PostgreSQL with migrations, authentication, row-level permissions, and encrypted storage for documents.
+The database and its parent directory are created with owner-only permissions where the platform supports POSIX modes. This protects against accidental local disclosure, but it is not encryption and does not replace operating-system account security.
+
+Legacy JSON files are never opened as live workspaces. Migration must be requested explicitly:
+
+```bash
+python3 -m bokpilot migrate --from-json data/workspace.json --to-sqlite data/bokpilot.sqlite3
+```
+
+The source JSON is preserved, and repeated migration of the same source is detected. Backup archives contain a manifest and SHA-256 hashes; restore validates archive paths and hashes before replacing the destination database atomically.
