@@ -21,16 +21,15 @@ regenerate and replace it if the fixture changes.
 - [ ] **Blocked:** upload the final version-`0.2.0` synthetic SIE fixture to the official SIE test service and record specification edition, validation date, SHA-256, and result.
 - [x] Zero known unresolved high-priority security/privacy regressions in the local suite.
 - [x] Legacy v0.1 migration and verified restore are rehearsed by automated fixtures.
-- [ ] Wheel smoke confirmed on Python 3.10 and 3.14 in required CI.
+- [x] Wheel smoke confirmed on Python 3.10 and 3.14 in required CI (PR #2 matrix: Python 3.10–3.14).
 - [x] Desktop, mobile, and keyboard-oriented review corridor evidence recorded.
 - [x] Default export tests confirm no raw documents or local paths.
 - [x] Tracked package samples and parser/export fixtures are synthetic; no user workspace artifacts are tracked.
 
 This external validation is intentionally open. It must not be marked complete without the real service result.
 
-Overall v0.2 release gate: **BLOCKED on the two manual external gates and the
-required remote CI matrix.** No reviewer identity or SIE service result has
-been inferred or fabricated.
+Overall v0.2 release gate: **BLOCKED on the two manual external gates.** No
+reviewer identity or SIE service result has been inferred or fabricated.
 
 ## Local UI evidence (2026-07-12)
 
