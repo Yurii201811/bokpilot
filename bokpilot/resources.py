@@ -1,5 +1,9 @@
 from importlib.resources import files
-from importlib.resources.abc import Traversable
+
+try:
+    from importlib.resources.abc import Traversable
+except ModuleNotFoundError:  # Python 3.10
+    from importlib.abc import Traversable
 
 
 def resource_file(*parts: str) -> Traversable:
