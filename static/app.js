@@ -4,6 +4,8 @@ const state = {
   statusFilter: "all",
 };
 
+const destructiveConfirmationHeader = "X-Bokpilot-Confirmation";
+
 const formatter = new Intl.NumberFormat("sv-SE", {
   style: "currency",
   currency: "SEK",
@@ -17,6 +19,9 @@ const percentFormatter = new Intl.NumberFormat("sv-SE", {
 const els = {
   loadSample: document.querySelector("#load-sample"),
   reset: document.querySelector("#reset"),
+  actionError: document.querySelector("#action-error"),
+  actionErrorMessage: document.querySelector("#action-error-message"),
+  dismissActionError: document.querySelector("#dismiss-action-error"),
   fileForm: document.querySelector("#file-form"),
   fileInput: document.querySelector("#file-input"),
   manualForm: document.querySelector("#manual-form"),
@@ -34,8 +39,8 @@ els.manualDate.valueAsDate = new Date();
 
 async function request(path, options = {}) {
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
   });
   const contentType = response.headers.get("Content-Type") || "";
   const payload = contentType.includes("application/json")
@@ -186,19 +191,75 @@ function toast(message) {
   window.setTimeout(() => els.toast.classList.remove("show"), 2600);
 }
 
+function showActionError(error) {
+  const message = error instanceof Error ? error.message : String(error || "Request failed");
+  els.actionErrorMessage.textContent = message;
+  els.actionError.hidden = false;
+  els.actionError.focus();
+}
+
+function clearActionError() {
+  els.actionError.hidden = true;
+  els.actionErrorMessage.textContent = "";
+}
+
+async function runButtonAction(button, pendingLabel, action) {
+  const actionButtons = [els.loadSample, els.reset];
+  if (actionButtons.some((actionButton) => actionButton.disabled)) return;
+  const originalLabel = button.textContent;
+  actionButtons.forEach((actionButton) => {
+    actionButton.disabled = true;
+  });
+  button.setAttribute("aria-busy", "true");
+  button.textContent = pendingLabel;
+  try {
+    await action();
+  } catch (error) {
+    showActionError(error);
+  } finally {
+    actionButtons.forEach((actionButton) => {
+      actionButton.disabled = false;
+    });
+    button.removeAttribute("aria-busy");
+    button.textContent = originalLabel;
+  }
+}
+
+els.dismissActionError.addEventListener("click", clearActionError);
+
 els.loadSample.addEventListener("click", async () => {
-  state.workspace = await request("/api/load-sample", { method: "POST", body: "{}" });
-  state.selectedId = state.workspace.items[0]?.id || null;
-  toast("Sample Swedish bookkeeping scenarios loaded.");
-  render();
+  const hasData = Boolean(state.workspace?.items?.length || state.workspace?.events?.length);
+  if (hasData && !window.confirm("Replace the current workspace with sample data? This removes all existing items and review history.")) {
+    return;
+  }
+  await runButtonAction(els.loadSample, "Loading…", async () => {
+    state.workspace = await request("/api/load-sample", {
+      method: "POST",
+      headers: hasData ? { [destructiveConfirmationHeader]: "replace-with-samples" } : {},
+      body: "{}",
+    });
+    state.selectedId = state.workspace.items[0]?.id || null;
+    clearActionError();
+    render();
+  });
 });
 
 els.reset.addEventListener("click", async () => {
-  state.workspace = await request("/api/reset", { method: "POST", body: "{}" });
-  state.selectedId = null;
-  els.exportPreview.textContent = "Approve at least one item to preview an export.";
-  toast("Workspace reset.");
-  render();
+  const hasData = Boolean(state.workspace?.items?.length || state.workspace?.events?.length);
+  if (hasData && !window.confirm("Reset the workspace? This removes all items and review history.")) {
+    return;
+  }
+  await runButtonAction(els.reset, "Resetting…", async () => {
+    state.workspace = await request("/api/reset", {
+      method: "POST",
+      headers: hasData ? { [destructiveConfirmationHeader]: "reset-workspace" } : {},
+      body: "{}",
+    });
+    state.selectedId = null;
+    els.exportPreview.textContent = "Approve at least one item to preview an export.";
+    clearActionError();
+    render();
+  });
 });
 
 els.statusFilter.addEventListener("change", () => {
@@ -269,5 +330,5 @@ document.querySelectorAll("[data-export]").forEach((button) => {
 
 refresh().catch((error) => {
   els.exportPreview.textContent = error.message;
-  toast(error.message);
+  showActionError(error);
 });

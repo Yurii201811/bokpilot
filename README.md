@@ -24,6 +24,7 @@ The first version is deliberately local-first and dependency-light. It does not 
 - Let a human approve, reject, keep open, or override BAS/VAT treatment.
 - Export approved human-reviewed items only as JSON, CSV, or a basic SIE-style draft.
 - Store data locally in `data/workspace.json` by default.
+- Replace the workspace file atomically at runtime after a complete JSON write, preserving the last good file when serialization, temporary writing, or replacement reports a failure.
 - Run tests without external services.
 
 ## Quick start
@@ -42,11 +43,18 @@ Open [http://127.0.0.1:8765](http://127.0.0.1:8765), then:
 4. Approve one or more items.
 5. Generate JSON, CSV, or SIE-style export output.
 
+Loading samples into a non-empty workspace or resetting an existing workspace requires explicit confirmation. After the browser prompt, Bokpilot sends the confirmation through the custom `X-Bokpilot-Confirmation` request header. The server rejects a public body token or a cross-origin simple POST, and serializes POST mutations so another import cannot slip between the destructive check and reset. Sample replacement builds the complete sample workspace in memory and persists it once, so a failed save keeps the previous workspace file.
+
 Use a separate local workspace file:
 
 ```bash
 BOKPILOT_DATA_PATH=/tmp/bokpilot-workspace.json python3 -m bokpilot --port 8765
 ```
+
+The default `127.0.0.1` binding is intentionally local. Bokpilot has no
+authentication; binding to a non-loopback address prints a warning and should
+not be used on an untrusted network. The confirmation header is a browser-CSRF
+guard for destructive actions, not an authentication mechanism.
 
 Run tests:
 
